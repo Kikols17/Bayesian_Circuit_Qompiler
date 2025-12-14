@@ -7,6 +7,7 @@ from typing import (
     Optional,
     Set,
 )
+from itertools import product
 
 class CPT_intern:
     """
@@ -40,6 +41,40 @@ class CPT_intern:
         if table is not None:
             self.set_table(table=table)
 
+    def get_evidence_comb(self) -> Tuple[List[Tuple[str|bool, ...]], List[Dict[str, str|bool]]]:
+        """
+        Return the complete list of all possible evidence-state combinations.
+
+        Returns:
+            (combos, mappings)
+            - combos: list of tuples of evidence values in the same order as self.evidences
+              (for no evidences returns [()]).
+            - mappings: list of dicts mapping evidence_name -> value for each combo.
+
+        Raises:
+            ValueError if evidences_states is missing for any evidence name.
+        """
+        parents = self.evidences or []
+        if not parents:
+            return [()], [{}]
+
+        if self.evidences_states is None:
+            raise ValueError("evidences_states must be provided to compute all evidence combinations")
+
+        lists = []
+        for name in parents:
+            states = self.evidences_states.get(name)
+            if states is None:
+                raise ValueError(f"no states declared for evidence {name!r} in evidences_states")
+            lists.append(list(states))
+
+        combos = [tuple(p) for p in product(*lists)]
+        mappings: List[Dict[str, str|bool]] = []
+        for combo in combos:
+            mapping = {name: val for name, val in zip(parents, combo)}
+            mappings.append(mapping)
+        return combos, mappings
+
     def set_table(self,
                   table: Dict[Tuple[str|bool, ...], float]
                  ) -> None:
@@ -49,8 +84,10 @@ class CPT_intern:
         If variable_states is set, every key's variable value must be one of those states.
         If evidences_states is set, every evidence value in each key must be one of the declared states
         for that evidence (evidences_states is expected to be a dict mapping evidence name -> list of states).
+        Additionally, this enforces that the table contains exactly the Cartesian product of
+        variable_states x evidence combinations (no missing or extra entries).
         """
-        expected_len = 1 + len(self.evidences)
+        expected_len = 1 + len(self.evidences or [])
 
         for k, v in table.items():
             if not isinstance(k, tuple):
@@ -74,7 +111,7 @@ class CPT_intern:
                 for idx, val in enumerate(parents):
                     # ensure we have an evidence name at this position
                     try:
-                        evidence_name = self.evidences[idx]
+                        evidence_name = (self.evidences or [])[idx]
                     except IndexError:
                         # should not happen because of earlier length check
                         raise ValueError("mismatch between evidences and table key length")
@@ -83,6 +120,28 @@ class CPT_intern:
                         raise ValueError(f"no states declared for evidence {evidence_name!r} in evidences_states")
                     if val not in allowed:
                         raise ValueError(f"evidence value {val!r} for '{evidence_name}' not in declared states {allowed}")
+
+        # enforce completeness: table must contain every variable state for every evidence combination
+        if self.variable_states is None:
+            raise ValueError("variable_states must be provided to ensure completeness of the CPT")
+
+        # compute expected parent combinations
+        combos, _ = self.get_evidence_comb()
+        expected_keys = set()
+        for parent in combos:
+            for var_state in self.variable_states:
+                expected_keys.add((var_state,) + tuple(parent))
+
+        table_keys = set(table.keys())
+        if table_keys != expected_keys:
+            missing = expected_keys - table_keys
+            extra = table_keys - expected_keys
+            msgs = []
+            if missing:
+                msgs.append(f"missing entries for combinations: {missing}")
+            if extra:
+                msgs.append(f"extra/unexpected entries: {extra}")
+            raise ValueError("table does not contain exactly the full set of variable states x evidence combinations: " + "; ".join(msgs))
 
         self.table = table
 
@@ -123,9 +182,10 @@ class CPT_intern:
         """
         Set probability for a single assignment.
         assignment: iterable of values in the order (variable_value, *evidence_values)
+        Note: incremental setting is allowed; completeness is enforced by set_table/validate.
         """
         key = tuple(assignment)
-        expected_len = 1 + len(self.evidences)
+        expected_len = 1 + len(self.evidences or [])
         if len(key) != expected_len:
             raise ValueError("assignment length does not match number of variable + evidences")
         if not isinstance(prob, (int, float)):
@@ -135,6 +195,20 @@ class CPT_intern:
             raise ValueError("probabilities must be in [0, 1]")
         if self.variable_states is not None and key[0] not in self.variable_states:
             raise ValueError(f"variable value {key[0]!r} not in declared variable_states")
+        # evidences states legality check if present
+        if self.evidences_states is not None:
+            parents = key[1:]
+            for idx, val in enumerate(parents):
+                try:
+                    evidence_name = (self.evidences or [])[idx]
+                except IndexError:
+                    raise ValueError("mismatch between evidences and assignment length")
+                allowed = self.evidences_states.get(evidence_name)
+                if allowed is None:
+                    raise ValueError(f"no states declared for evidence {evidence_name!r} in evidences_states")
+                if val not in allowed:
+                    raise ValueError(f"evidence value {val!r} for '{evidence_name}' not in declared states {allowed}")
+
         self.table[key] = p
 
     def get_probability(self,
@@ -150,7 +224,7 @@ class CPT_intern:
             ev_tuple = tuple(evidence)
 
         key = (query,) + ev_tuple
-        expected_len = 1 + len(self.evidences)
+        expected_len = 1 + len(self.evidences or [])
         if len(key) != expected_len:
             raise ValueError(f"query + assignment length ({len(key)}) does not match number of variable + evidences ({expected_len})")
         return self.table[key]
@@ -171,6 +245,7 @@ class CPT_intern:
         - for each evidence assignment, the probabilities over variable values sum to 1 (within tol)
         - if variable_states is provided, for each evidence assignment the set of variable values
           equals the declared variable_states (no missing or extra states)
+        - ensures the table covers every evidence combination (if evidences_states provided)
         Returns True if valid.
         """
         if not isinstance(self.variable, str) or not self.variable:
@@ -222,6 +297,21 @@ class CPT_intern:
         if not sums:
             raise ValueError("CPT table is empty")
 
+        # if evidences_states provided, ensure sums keys cover all combinations
+        if self.evidences_states is not None:
+            combos, _ = self.get_evidence_comb()
+            seen_combos = set(sums.keys())
+            expected_combos = set(combos)
+            if seen_combos != expected_combos:
+                missing = expected_combos - seen_combos
+                extra = seen_combos - expected_combos
+                msgs = []
+                if missing:
+                    msgs.append(f"missing evidence combinations: {missing}")
+                if extra:
+                    msgs.append(f"unexpected evidence combinations: {extra}")
+                raise ValueError("evidence combinations in table do not match evidences_states: " + "; ".join(msgs))
+
         for evidence_key, total in sums.items():
             if abs(total - 1.0) > tol:
                 raise ValueError(f"probabilities for evidences {evidence_key} sum to {total}, not 1.0")
@@ -229,6 +319,8 @@ class CPT_intern:
                 seen = seen_vals.get(evidence_key, set())
                 if set(self.variable_states) != seen:
                     raise ValueError(f"for evidences {evidence_key} variable states {seen} do not match declared states {set(self.variable_states)}")
+
+        return True
 
     def table_string(self,
                      float_fmt: str = "{:.4g}",
@@ -535,7 +627,7 @@ if __name__ == "__main__":
         print(f"Expected failure occurred: {e}")
 
 
-    N = 1000
+    N = 100
     print(f"\n--- Example 8: Speed test of CPT with {N}x{N} ---")
     import time
     import random
@@ -600,3 +692,72 @@ if __name__ == "__main__":
     print(f"get_tablesize: {size} time={t_getsize:.6f}s")
     print(f"1000 get_probability calls: time={t_queries:.4f}s")
     print(f"Incremental set_probability of {len(table)} entries: time={t_inc_set:.4f}s")
+
+
+    # Additional tests/examples: evidence_comb demonstrations and expected failures
+    print("\n--- Example 9: get_evidence_comb with no evidences ---")
+    cpt_no_parents = CPT_intern(variable="A", variable_states=["a", "b"], evidences=[])
+    combos, maps = cpt_no_parents.get_evidence_comb()
+    print("combos:", combos)
+    print("maps:", maps)
+
+    print("\n--- Example 10: get_evidence_comb with multiple evidences ---")
+    cpt_multi = CPT_intern(
+        variable="X",
+        variable_states=["x1", "x2"],
+        evidences=["P", "Q"],
+        evidences_states={"P": [1, 2], "Q": ["r", "s"]}
+    )
+    combos, maps = cpt_multi.get_evidence_comb()
+    print("expected number of combinations:", len([1,2]) * len(["r","s"]))
+    print("combos:", combos)
+    print("first 3 mappings:", maps[:3])
+
+    print("\n--- Example 10: get_evidence_comb with multiple evidences ---")
+    cpt_multi = CPT_intern(
+        variable="X",
+        variable_states=["x1", "x2"],
+        evidences=["P", "Q"],
+        evidences_states={"P": [1, 2], "Q": ["r", "s"]}
+    )
+    combos, maps = cpt_multi.get_evidence_comb()
+    print("expected number of combinations:", len([1,2]) * len(["r","s"]))
+    print("combos:", combos)
+    print("first 3 mappings:", maps[:3])
+
+
+    print("\n--- Example 4: Multiple Parents Failure to account for all state combinations ---")
+    # Alarm depends on Burglary and Earthquake (both yes/no)
+    cpt_alarm = CPT_intern(
+        variable="Alarm",
+        variable_states=["ring", "silent"],
+        evidences=["Burglary", "Earthquake"],
+        evidences_states={
+            "Burglary": ["yes", "no"],
+            "Earthquake": ["yes", "no"]
+        }
+    )
+
+    # Setting probabilities one by one
+    # P(Alarm | Burglary, Earthquake)
+    cpt_alarm.set_probability(("ring",   "yes", "yes"), 0.95)
+    cpt_alarm.set_probability(("silent", "yes", "yes"), 0.05)
+
+    cpt_alarm.set_probability(("ring",   "yes", "no"),  0.94)
+    cpt_alarm.set_probability(("silent", "yes", "no"),  0.06)
+
+    cpt_alarm.set_probability(("ring",   "no",  "yes"), 0.29)
+    cpt_alarm.set_probability(("silent", "no",  "yes"), 0.71)
+
+    #cpt_alarm.set_probability(("ring",   "no",  "no"),  0.001)
+    #cpt_alarm.set_probability(("silent", "no",  "no"),  0.999)
+
+    print(cpt_alarm.table_string())
+    print("(Missing evidence combinations ('no', 'no'))")
+    print("Table size:", cpt_alarm.get_tablesize())
+
+    try:
+        cpt_alarm.validate()
+        print("Validation passed. (NOT SUPOSED TO HAPPEN)")
+    except ValueError as e:
+        print(f"Validation failed (Expected): {e}")
