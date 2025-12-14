@@ -68,6 +68,32 @@ class CPT_intern:
         """Return a shallow copy of the table."""
         return dict(self.table)
 
+    def get_tablesize(self) -> Tuple[int]:
+        """Return the size (cols, rows) of the table."""
+        # determine variable values (rows)
+        if self.variable_states is not None:
+            var_vals: List[Any] = list(self.variable_states)
+        else:
+            var_vals = []
+        # determine distinct parent assignments (columns minus the first column)
+        parent_keys: List[Tuple[Any, ...]] = []
+        seen_parents: Set[Tuple[Any, ...]] = set()
+        seen_vars = set(var_vals)
+
+        for key in self.table.keys():
+            var = key[0]
+            parents = key[1:]
+            if var not in seen_vars:
+                var_vals.append(var)
+                seen_vars.add(var)
+            if parents not in seen_parents:
+                parent_keys.append(parents)
+                seen_parents.add(parents)
+
+        cols = len(parent_keys)
+        rows = len(var_vals)
+        return (cols, rows)
+
     def set_probability(self,
                         assignment: Iterable[Any],
                         prob: float
@@ -312,6 +338,7 @@ if __name__ == "__main__":
     })
     print(f"Created CPT for {cpt_coin.variable}")
     print(cpt_coin.table_string())
+    print("Table size:", cpt_coin.get_tablesize())
     try:
         cpt_coin.validate()
         print("Validation passed.")
@@ -335,6 +362,7 @@ if __name__ == "__main__":
     })
     print(cpt_grass.table_string())
     print(f"P(GrassWet=yes | Rain=yes) = {cpt_grass.get_probability(True, True)}")
+    print("Table size:", cpt_grass.get_tablesize())
 
 
     print("\n--- Example 3: Conditional Probability (One Parent with Non-Binary States) ---")
@@ -351,10 +379,11 @@ if __name__ == "__main__":
         (True,  "cloudy"): 0.30,
         (False, "cloudy"): 0.70,
         (True,  "rainy"):  0.95,
-        (False, "rainy"):  0.05,
+        (False, "rainy"): 0.05,
     })
     print(cpt_grass.table_string())
     print(f"P(GrassWet=True | Weather='rainy') = {cpt_grass.get_probability(True, 'rainy')}")
+    print("Table size:", cpt_grass.get_tablesize())
 
 
     print("\n--- Example 4: Multiple Parents & Incremental Setup ---")
@@ -380,6 +409,7 @@ if __name__ == "__main__":
     cpt_alarm.set_probability(("silent", "no",  "no"),  0.999)
 
     print(cpt_alarm.table_string())
+    print("Table size:", cpt_alarm.get_tablesize())
 
     try:
         cpt_alarm.validate()
@@ -402,6 +432,7 @@ if __name__ == "__main__":
     })
     print("Created invalid table (sum > 1)")
     print(cpt_broken.table_string())
+    print("Table size:", cpt_broken.get_tablesize())
     try:
         cpt_broken.validate()
         print("Validation passed (NOT SUPOSED TO HAPPEN).")
