@@ -161,8 +161,6 @@ class CPT_intern:
                 if set(self.variable_states) != seen:
                     raise ValueError(f"for evidences {evidence_key} variable states {seen} do not match declared states {set(self.variable_states)}")
 
-        return True
-
     def table_string(self,
                      float_fmt: str = "{:.4g}",
                      missing: str = ""
@@ -214,7 +212,11 @@ class CPT_intern:
             else:
                 lines = []
                 for name, val in zip(parents, pk):
-                    lines.append(f"{name}({val})")
+                    # If state is a str, print it, if bool, put 0/1
+                    if isinstance(val, bool):
+                        lines.append(f"{name}({int(val)})")
+                    else:
+                        lines.append(f"{name}({val})")
                 # if there are fewer values than parents (shouldn't happen) pad
                 if len(lines) < header_height:
                     lines += [""] * (header_height - len(lines))
@@ -229,7 +231,14 @@ class CPT_intern:
             header_rows.append(row)
 
         # build row labels and cells
-        row_labels = [f"{self.variable}({v})" for v in var_vals]
+        # If state is a str, print it, if bool, put 0/1
+        row_labels: List[str] = []
+        for v in var_vals:
+            if isinstance(v, bool):
+                row_labels.append(f"{self.variable}({int(v)})")
+            else:
+                row_labels.append(f"{self.variable}({v})")
+
         body: List[List[str]] = []
         for vv in var_vals:
             row: List[str] = []
@@ -288,81 +297,113 @@ class CPT_intern:
 
 
 if __name__ == "__main__":
-    # Examples exercising all public functions (and a couple internals).
+    # To run this example: python -m src.base.CPT_intern
 
-    # Example 1: variable with one parent (original example)
-    cpt = CPT_intern(variable="weather", evidences=["season"],
-                     variable_states=["sunny", "cloudy", "rainy"])
-    table = {
-        ("sunny", "summer"): 0.7,
-        ("cloudy", "summer"): 0.2,
-        ("rainy", "summer"): 0.1,
-        ("sunny", "winter"): 0.2,
-        ("cloudy", "winter"): 0.3,
-        ("rainy", "winter"): 0.5,
-    }
-    # set_table -> validates and stores
-    cpt.set_table(table)
-    print("Initial CPT repr:", repr(cpt))
-    # validate -> True
-    print("Validate:", cpt.validate())
-    # table_string -> ASCII representation
-    print("\nASCII table (weather):")
-    print(cpt.table_string(float_fmt="{:.2f}"))
-
-    # get_probability -> direct lookup
-    p = cpt.get_probability("sunny", ("summer"))
-    print("P(weather=sunny | season=summer) =", p)
-
-    # entries / get_table -> get a copy
-    entries_copy = cpt.get_table()
-    print("Entries size:", len(entries_copy))
-
-    # Example 2: variable with no evidences (simple marginal)
-    coin = CPT_intern(variable="coin", evidences=[], variable_states=["H", "T"])
-    # set_table with single-element keys
-    coin.set_table({
-        ("H",): 0.5,
-        ("T",): 0.5,
+    print("--- Example 1: Simple Marginal Probability (No Parents) ---")
+    # A simple coin toss
+    cpt_coin = CPT_intern(
+        variable="Coin",
+        variable_states=["Heads", "Tails"],
+        evidences=[]
+    )
+    cpt_coin.set_table({
+        ("Heads",): 0.5,
+        ("Tails",): 0.5,
     })
-    print("\nCoin CPT repr:", repr(coin))
-    print("Coin validate:", coin.validate())
-    print("Coin ASCII:")
-    print(coin.table_string(float_fmt="{:.1f}"))
+    print(f"Created CPT for {cpt_coin.variable}")
+    print(cpt_coin.table_string())
+    try:
+        cpt_coin.validate()
+        print("Validation passed.")
+    except ValueError as e:
+        print(f"Validation failed (NOT SUPOSED TO HAPPEN): {e}")
 
-    # Example 3: using set_probability and get_table for a multi-parent node
-    lights = CPT_intern(variable="light", evidences=["switch1", "switch2"], variable_states=["on", "off"])
-    # set individual probabilities (for one evidence assignment)
-    lights.set_probability(("on", "up", "up"), 1.0)
-    lights.set_probability(("off", "up", "up"), 0.0)
-    # for another evidence assignment
-    lights.set_probability(("on", "down", "down"), 0.0)
-    lights.set_probability(("off", "down", "down"), 1.0)
-    print("\nLights entries (partial):", lights.get_table())
-    print(lights.table_string())
-    # get_probability for a known assignment
-    print("P(light=on | switch1=up, switch2=up) =", lights.get_probability("on", ("up", "up")))
-    # validate should be False because not all evidence assignments present for both states
-    print("Lights validate (should be True):", lights.validate())
 
-    # Example 4: change variable_states after creation
-    temp = CPT_intern("temp", evidences=["day", "time"])
-    # initially no variable_states; set probabilities for both times (day/night) for monday and tuesday
-    temp.set_table({
-        ("hot", "monday", "day"): 0.6,
-        ("cold", "monday", "day"): 0.4,
-        ("hot", "monday", "night"): 0.3,
-        ("cold", "monday", "night"): 0.7,
-        ("hot", "tuesday", "day"): 0.8,
-        ("cold", "tuesday", "day"): 0.2,
-        ("hot", "tuesday", "night"): 0.4,
-        ("cold", "tuesday", "night"): 0.6,
+    print("\n--- Example 2: Conditional Probability (One Parent) ---")
+    # Grass Wet depends on Rain
+    cpt_grass = CPT_intern(
+        variable="GrassWet",
+        variable_states=[True, False],
+        evidences=["Rain"]
+    )
+    # P(GrassWet | Rain)
+    cpt_grass.set_table({
+        (True, True): 0.9,      # P(Wet=yes | Rain=yes)
+        (False, True): 0.1,     # P(Wet=no  | Rain=yes)
+        (True, False): 0.2,     # P(Wet=yes | Rain=no) - maybe sprinkler?
+        (False, False): 0.8,    # P(Wet=no  | Rain=no)
     })
-    print("\nTemp before states repr:", repr(temp))
-    # declare states (order matters for printing/validation)
-    print("Temp validate (should be False, missing variable_states):", temp.validate())
-    temp.variable_states = ["cold", "hot"]
-    print(temp.table)
-    print("Temp after setting variable_states repr:", repr(temp))
-    print("Temp validate (should be True):", temp.validate())
-    print(temp.table_string(float_fmt="{:.1f}"))
+    print(cpt_grass.table_string())
+    print(f"P(GrassWet=yes | Rain=yes) = {cpt_grass.get_probability(True, True)}")
+
+
+    print("\n--- Example 3: Conditional Probability (One Parent with Non-Binary States) ---")
+    # GrassWet depends on Weather which has three states: sunny, cloudy, rainy
+    cpt_grass = CPT_intern(
+        variable="GrassWet",
+        variable_states=[True, False],
+        evidences=["Weather"]
+    )
+    # P(GrassWet | Weather)
+    cpt_grass.set_table({
+        (True,  "sunny"):  0.01,
+        (False, "sunny"):  0.99,
+        (True,  "cloudy"): 0.30,
+        (False, "cloudy"): 0.70,
+        (True,  "rainy"):  0.95,
+        (False, "rainy"):  0.05,
+    })
+    print(cpt_grass.table_string())
+    print(f"P(GrassWet=True | Weather='rainy') = {cpt_grass.get_probability(True, 'rainy')}")
+
+
+    print("\n--- Example 4: Multiple Parents & Incremental Setup ---")
+    # Alarm depends on Burglary and Earthquake
+    cpt_alarm = CPT_intern(
+        variable="Alarm",
+        variable_states=["ring", "silent"],
+        evidences=["Burglary", "Earthquake"]
+    )
+
+    # Setting probabilities one by one
+    # P(Alarm | Burglary, Earthquake)
+    cpt_alarm.set_probability(("ring",   "yes", "yes"), 0.95)
+    cpt_alarm.set_probability(("silent", "yes", "yes"), 0.05)
+
+    cpt_alarm.set_probability(("ring",   "yes", "no"),  0.94)
+    cpt_alarm.set_probability(("silent", "yes", "no"),  0.06)
+
+    cpt_alarm.set_probability(("ring",   "no",  "yes"), 0.29)
+    cpt_alarm.set_probability(("silent", "no",  "yes"), 0.71)
+
+    cpt_alarm.set_probability(("ring",   "no",  "no"),  0.001)
+    cpt_alarm.set_probability(("silent", "no",  "no"),  0.999)
+
+    print(cpt_alarm.table_string())
+
+    try:
+        cpt_alarm.validate()
+        print("Validation passed.")
+    except ValueError as e:
+        print(f"Validation failed (NOT SUPOSED TO HAPPEN): {e}")
+
+
+
+    print("\n--- Example 5: Validation Errors ---")
+    cpt_broken = CPT_intern(
+        variable="Broken",
+        variable_states=["yes", "no"],
+        evidences=[]
+    )
+    # Probabilities sum to 1.1
+    cpt_broken.set_table({
+        ("yes",): 0.6,
+        ("no",): 0.5
+    })
+    print("Created invalid table (sum > 1)")
+    print(cpt_broken.table_string())
+    try:
+        cpt_broken.validate()
+        print("Validation passed (NOT SUPOSED TO HAPPEN).")
+    except ValueError as e:
+        print(f"Validation failed (SUPOSED TO HAPPEN): {e}")
