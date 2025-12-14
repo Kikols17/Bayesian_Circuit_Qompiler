@@ -20,22 +20,25 @@ class CPT_intern:
     """
 
     variable: str                               # Query variable name
-    variable_states: List[str | bool]           # Ordered list of variable states names (bool for binary states, string otherwise)
+    variable_states: List[str|bool]             # Ordered list of variable states names (bool for binary states, string otherwise)
     evidences: List[str]                        # Evidence variables' names
+    evidences_states: Dict[str, List[str|bool]] # Dictionary that associates evidences' variable names to ordered lists of state names
     table: Dict[Tuple[str | bool, ...], float]  # CPT table in Dict form
 
     def __init__(self,
                  variable: str,
                  variable_states: Optional[List[str|bool]] = None,
                  evidences: Optional[List[str]] = None,
+                 evidences_states: Dict[str, List[str | bool]] = None,
                  table: Optional[Dict[Tuple[str|bool, ...], float]] = None
                 ) -> None:
         self.variable = variable
         self.variable_states = variable_states
         self.evidences = evidences
+        self.evidences_states = evidences_states
         self.table = {}
         if table is not None:
-            self.table = table
+            self.set_table(table=table)
 
     def set_table(self,
                   table: Dict[Tuple[str|bool, ...], float]
@@ -44,9 +47,11 @@ class CPT_intern:
         Replace the whole table. Keys must be tuples with length == 1 + len(evidences).
         Values must be numbers in [0, 1].
         If variable_states is set, every key's variable value must be one of those states.
+        If evidences_states is set, every evidence value in each key must be one of the declared states
+        for that evidence (evidences_states is expected to be a dict mapping evidence name -> list of states).
         """
-        validated: Dict[Tuple[str|bool, ...], float] = {}
         expected_len = 1 + len(self.evidences)
+
         for k, v in table.items():
             if not isinstance(k, tuple):
                 raise TypeError("table keys must be tuples matching (variable, *evidences) order")
@@ -57,11 +62,29 @@ class CPT_intern:
             prob = float(v)
             if prob < 0.0 or prob > 1.0:
                 raise ValueError("probabilities must be in [0, 1]")
+
+            # check variable state legality
             if self.variable_states is not None:
                 if k[0] not in self.variable_states:
                     raise ValueError(f"variable value {k[0]!r} not in declared variable_states")
-            validated[k] = prob
-        self.table = validated
+
+            # check evidences states legality if provided
+            if self.evidences_states is not None:
+                parents = k[1:]
+                for idx, val in enumerate(parents):
+                    # ensure we have an evidence name at this position
+                    try:
+                        evidence_name = self.evidences[idx]
+                    except IndexError:
+                        # should not happen because of earlier length check
+                        raise ValueError("mismatch between evidences and table key length")
+                    allowed = self.evidences_states.get(evidence_name)
+                    if allowed is None:
+                        raise ValueError(f"no states declared for evidence {evidence_name!r} in evidences_states")
+                    if val not in allowed:
+                        raise ValueError(f"evidence value {val!r} for '{evidence_name}' not in declared states {allowed}")
+
+        self.table = table
 
     def get_table(self) -> Dict[Tuple[str|bool, ...], float]:
         """Return a shallow copy of the table."""
@@ -174,6 +197,27 @@ class CPT_intern:
             evidence_key = k[1:]
             sums[evidence_key] += prob
             seen_vals[evidence_key].add(k[0])
+
+            # check variable state legality
+            if self.variable_states is not None:
+                if k[0] not in self.variable_states:
+                    raise ValueError(f"variable value {k[0]!r} not in declared variable_states")
+
+            # check evidences states legality if provided
+            if self.evidences_states is not None:
+                parents = k[1:]
+                for idx, val in enumerate(parents):
+                    # ensure we have an evidence name at this position
+                    try:
+                        evidence_name = self.evidences[idx]
+                    except IndexError:
+                        # should not happen because of earlier length check
+                        raise ValueError("mismatch between evidences and table key length")
+                    allowed = self.evidences_states.get(evidence_name)
+                    if allowed is None:
+                        raise ValueError(f"no states declared for evidence {evidence_name!r} in evidences_states")
+                    if val not in allowed:
+                        raise ValueError(f"evidence value {val!r} for '{evidence_name}' not in declared states {allowed}")
 
         if not sums:
             raise ValueError("CPT table is empty")
@@ -330,6 +374,7 @@ if __name__ == "__main__":
         variable="Coin",
         variable_states=["Heads", "Tails"],
         evidences=[]
+        # no evidences_states needed because no evidences
     )
     cpt_coin.set_table({
         ("Heads",): 0.5,
@@ -346,17 +391,18 @@ if __name__ == "__main__":
 
 
     print("\n--- Example 2: Conditional Probability (One Parent) ---")
-    # Grass Wet depends on Rain
+    # Grass Wet depends on Rain (boolean)
     cpt_grass = CPT_intern(
         variable="GrassWet",
         variable_states=[True, False],
-        evidences=["Rain"]
+        evidences=["Rain"],
+        evidences_states={"Rain": [True, False]}
     )
     # P(GrassWet | Rain)
     cpt_grass.set_table({
         (True, True): 0.9,      # P(Wet=yes | Rain=yes)
         (False, True): 0.1,     # P(Wet=no  | Rain=yes)
-        (True, False): 0.2,     # P(Wet=yes | Rain=no) - maybe sprinkler?
+        (True, False): 0.2,     # P(Wet=yes | Rain=no)
         (False, False): 0.8,    # P(Wet=no  | Rain=no)
     })
     print(cpt_grass.table_string())
@@ -369,7 +415,8 @@ if __name__ == "__main__":
     cpt_grass = CPT_intern(
         variable="GrassWet",
         variable_states=[True, False],
-        evidences=["Weather"]
+        evidences=["Weather"],
+        evidences_states={"Weather": ["sunny", "cloudy", "rainy"]}
     )
     # P(GrassWet | Weather)
     cpt_grass.set_table({
@@ -386,11 +433,15 @@ if __name__ == "__main__":
 
 
     print("\n--- Example 4: Multiple Parents & Incremental Setup ---")
-    # Alarm depends on Burglary and Earthquake
+    # Alarm depends on Burglary and Earthquake (both yes/no)
     cpt_alarm = CPT_intern(
         variable="Alarm",
         variable_states=["ring", "silent"],
-        evidences=["Burglary", "Earthquake"]
+        evidences=["Burglary", "Earthquake"],
+        evidences_states={
+            "Burglary": ["yes", "no"],
+            "Earthquake": ["yes", "no"]
+        }
     )
 
     # Setting probabilities one by one
@@ -437,3 +488,115 @@ if __name__ == "__main__":
         print("Validation passed (NOT SUPOSED TO HAPPEN).")
     except ValueError as e:
         print(f"Validation failed (SUPOSED TO HAPPEN): {e}")
+
+
+    print("\n--- Example 6: Failure when evidences_states missing an evidence entry ---")
+    # intenionally provide evidences_states missing "Earthquake"
+    cpt_fail_missing_state_map = CPT_intern(
+        variable="AlarmFail",
+        variable_states=["ring", "silent"],
+        evidences=["Burglary", "Earthquake"],
+        evidences_states={ "Burglary": ["yes", "no"] }  # missing Earthquake
+    )
+    try:
+        cpt_fail_missing_state_map.set_table({
+            ("ring", "yes", "yes"): 0.95,
+            ("silent", "yes", "yes"): 0.05,
+            ("ring", "yes", "no"): 0.94,
+            ("silent", "yes", "no"): 0.06,
+            ("ring", "no", "yes"): 0.29,
+            ("silent", "no", "yes"): 0.71,
+            ("ring", "no", "no"): 0.001,
+            ("silent", "no", "no"): 0.999,
+        })
+        print("ERROR: expected set_table to fail due to missing evidences_states entry (NOT HAPPENED)")
+    except ValueError as e:
+        print(f"Expected failure occurred: {e}")
+
+
+    print("\n--- Example 7: Failure when an evidence value is not in declared evidence states ---")
+    cpt_fail_bad_value = CPT_intern(
+        variable="AlarmFail2",
+        variable_states=["ring", "silent"],
+        evidences=["Burglary", "Earthquake"],
+        evidences_states={
+            "Burglary": ["yes", "no"],
+            "Earthquake": ["yes", "no"]
+        }
+    )
+    try:
+        # use an evidence value "maybe" which is not declared for Earthquake
+        cpt_fail_bad_value.set_table({
+            ("ring", "yes", "maybe"): 0.5,
+            ("silent", "yes", "maybe"): 0.5,
+        })
+        print("ERROR: expected set_table to fail due to invalid evidence value (NOT HAPPENED)")
+    except ValueError as e:
+        print(f"Expected failure occurred: {e}")
+
+
+    N = 1000
+    print(f"\n--- Example 8: Speed test of CPT with {N}x{N} ---")
+    import time
+    import random
+    var_states = [f"s{i}" for i in range(N)]
+    parent_states = [f"p{j}" for j in range(N)]
+
+    print(f"Creating a {N}x{N} CPT (rows=variable states, cols=parent states) -> total entries = {N*N}")
+
+    # Build table dict (uniform distribution per parent state)
+    t0 = time.perf_counter()
+    table = {}
+    pval = 1.0 / N
+    for p in parent_states:
+        for s in var_states:
+            table[(s, p)] = pval
+    t_build = time.perf_counter() - t0
+
+    # Create CPT and set the whole table
+    t0 = time.perf_counter()
+    cpt_large = CPT_intern(
+        variable="LargeVar",
+        variable_states=var_states,
+        evidences=["Parent"],
+        evidences_states={"Parent": parent_states}
+    )
+    cpt_large.set_table(table)
+    t_set = time.perf_counter() - t0
+
+    # Validate the CPT
+    t0 = time.perf_counter()
+    cpt_large.validate()
+    t_validate = time.perf_counter() - t0
+
+    # get_tablesize
+    t0 = time.perf_counter()
+    size = cpt_large.get_tablesize()
+    t_getsize = time.perf_counter() - t0
+
+    # time many get_probability calls
+    t0 = time.perf_counter()
+    for _ in range(1000):
+        q = random.choice(var_states)
+        e = random.choice(parent_states)
+        _ = cpt_large.get_probability(q, e)
+    t_queries = time.perf_counter() - t0
+
+    # time incremental set_probability (building a CPT entry-by-entry)
+    t0 = time.perf_counter()
+    cpt_inc = CPT_intern(
+        variable="LargeVar_inc",
+        variable_states=var_states,
+        evidences=["Parent"],
+        evidences_states={"Parent": parent_states}
+    )
+    for (k, v) in table.items():
+        cpt_inc.set_probability(k, v)
+    t_inc_set = time.perf_counter() - t0
+
+    print(f"Built table dict: entries={len(table)} time={t_build:.4f}s")
+    print(f"set_table: time={t_set:.4f}s")
+    print(f"validate: time={t_validate:.4f}s")
+    print(f"get_tablesize: {size} time={t_getsize:.6f}s")
+    print(f"1000 get_probability calls: time={t_queries:.4f}s")
+    print(f"Incremental set_probability of {len(table)} entries: time={t_inc_set:.4f}s")
