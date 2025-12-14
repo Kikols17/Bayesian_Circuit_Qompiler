@@ -3,7 +3,6 @@ from typing import (
     List,
     Dict,
     Tuple,
-    Any,
     Iterable,
     Optional,
     Set,
@@ -27,9 +26,9 @@ class CPT_intern:
 
     def __init__(self,
                  variable: str,
-                 variable_states: Optional[List[Any]] = None,
+                 variable_states: Optional[List[str|bool]] = None,
                  evidences: Optional[List[str]] = None,
-                 table: Optional[Dict[Tuple[Any, ...], float]] = None
+                 table: Optional[Dict[Tuple[str|bool, ...], float]] = None
                 ) -> None:
         self.variable = variable
         self.variable_states = variable_states
@@ -39,14 +38,14 @@ class CPT_intern:
             self.table = table
 
     def set_table(self,
-                  table: Dict[Tuple[Any, ...], float]
+                  table: Dict[Tuple[str|bool, ...], float]
                  ) -> None:
         """
         Replace the whole table. Keys must be tuples with length == 1 + len(evidences).
         Values must be numbers in [0, 1].
         If variable_states is set, every key's variable value must be one of those states.
         """
-        validated: Dict[Tuple[Any, ...], float] = {}
+        validated: Dict[Tuple[str|bool, ...], float] = {}
         expected_len = 1 + len(self.evidences)
         for k, v in table.items():
             if not isinstance(k, tuple):
@@ -64,7 +63,7 @@ class CPT_intern:
             validated[k] = prob
         self.table = validated
 
-    def get_table(self) -> Dict[Tuple[Any, ...], float]:
+    def get_table(self) -> Dict[Tuple[str|bool, ...], float]:
         """Return a shallow copy of the table."""
         return dict(self.table)
 
@@ -72,12 +71,12 @@ class CPT_intern:
         """Return the size (cols, rows) of the table."""
         # determine variable values (rows)
         if self.variable_states is not None:
-            var_vals: List[Any] = list(self.variable_states)
+            var_vals: List[str|bool] = list(self.variable_states)
         else:
             var_vals = []
         # determine distinct parent assignments (columns minus the first column)
-        parent_keys: List[Tuple[Any, ...]] = []
-        seen_parents: Set[Tuple[Any, ...]] = set()
+        parent_keys: List[Tuple[str|bool, ...]] = []
+        seen_parents: Set[Tuple[str|bool, ...]] = set()
         seen_vars = set(var_vals)
 
         for key in self.table.keys():
@@ -95,7 +94,7 @@ class CPT_intern:
         return (cols, rows)
 
     def set_probability(self,
-                        assignment: Iterable[Any],
+                        assignment: Iterable[str|bool],
                         prob: float
                        ) -> None:
         """
@@ -157,8 +156,8 @@ class CPT_intern:
         evidences = self.evidences or []
         expected_len = 1 + len(evidences)
 
-        sums: Dict[Tuple[Any, ...], float] = defaultdict(float)
-        seen_vals: Dict[Tuple[Any, ...], Set[Any]] = defaultdict(set)
+        sums: Dict[Tuple[str|bool, ...], float] = defaultdict(float)
+        seen_vals: Dict[Tuple[str|bool, ...], Set[str|bool]] = defaultdict(set)
 
         for k, v in self.table.items():
             if not isinstance(k, tuple):
@@ -202,10 +201,10 @@ class CPT_intern:
         """
         # collect variable values (first element) and evidence assignments in encountered order
         if self.variable_states is not None:
-            var_vals: List[Any] = list(self.variable_states)
+            var_vals: List[str|bool] = list(self.variable_states)
         else:
             var_vals = []
-        parent_keys: List[Tuple[Any, ...]] = []
+        parent_keys: List[Tuple[str|bool, ...]] = []
         seen_vars = set(var_vals)
         seen_parents = set()
         for key in self.table.keys():

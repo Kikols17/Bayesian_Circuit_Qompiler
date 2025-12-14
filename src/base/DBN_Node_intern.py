@@ -9,12 +9,12 @@ from typing import (
 class DBN_Node_intern:
     """Internal representation of a Discrete Bayesian Network's Node"""
     name: str                           # Node name
-    states: List[str | bool]            # Ordered list of states' names (bool for binary states, string otherwise)
+    states: List[str|bool]              # Ordered list of states' names (bool for binary states, string otherwise)
     cpt = CPT_intern                    # CPT object
 
     def __init__(self,
                  name: Optional[str] = None,
-                 states: Optional[List[str]] = None,
+                 states: Optional[List[str|bool]] = None,
                  cpt: Optional[CPT_intern] = None
                 ) -> None:
         self.name = name
