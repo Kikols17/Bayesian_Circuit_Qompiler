@@ -23,7 +23,7 @@ inference:
     method: "variable_elimination"
     params: {}
   circuit:
-    shots: 512
+    shots: 1024
     seed: 123
   backend:
     type: "pennylane.simulator"

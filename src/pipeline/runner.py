@@ -4,7 +4,7 @@ import math
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from src.config.loader import load_config
 from src.execution.pennylane_backend import run_pennylane
@@ -133,12 +133,19 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         raise ValueError(f"Unsupported backend: {config.inference.backend.type}")
     run_time = time.perf_counter() - run_start
 
+    baseline_distribution = None
+    if baseline_result is not None:
+        baseline_distribution = baseline_result.get("distribution")
+
     plot_path = None
     if isinstance(run_result.get("probs"), list):
         plot_path = save_probabilities_plot(
             output_dir,
             run_result["probs"],
             title=f"{config.name} probabilities",
+            query=config.inference.query,
+            wires_map=circuit_spec.wires_map,
+            baseline_distribution=baseline_distribution,
         )
 
     def _format_quantum_distribution(
@@ -192,7 +199,6 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         return kl
 
     baseline_kl = None
-    baseline_distribution = None
     quantum_distribution = _distribution_from_result(run_result)
     if baseline_result is not None:
         baseline_distribution = baseline_result.get("distribution")

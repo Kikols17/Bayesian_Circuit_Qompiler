@@ -13,11 +13,12 @@ network:
     grid_size: 8
     lighthouses:
       - [1, 1]
-      - [6, 2]
-    num_dist_bins: 20
-    num_bear_bins: 16
-    dist_noise: [0.0, 0.0, 0.0, 0.0]
-    bear_noise: [0.0, 0.0, 0.0, 0.0]
+    num_dist_bins: 8
+    num_bear_bins: 8
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+    #dist_noise: [0.0, 0.0, 0.0, 0.0]
+    #bear_noise: [0.0, 0.0, 0.0, 0.0]
 
 inference:
   compiler: "DCM"
@@ -27,7 +28,7 @@ inference:
     method: "variable_elimination"
     params: {}
   circuit:
-    shots: 64
+    shots: 128
     seed: 123
   backend:
     type: "pennylane.simulator"
@@ -35,9 +36,7 @@ inference:
     wires: null
   evidence:
     Dist1: 2
-    Bear1: 7
-    Dist2: 10
-    Bear2: 3
+    Bear1: 5
   query:
     - "X"
     - "Y"

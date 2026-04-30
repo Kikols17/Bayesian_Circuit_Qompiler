@@ -179,9 +179,11 @@ class DCMQompiler(QompilerBase):
                 variable_card, num_cols = vals.shape
                 node_wires = wires[node]
 
-                if node in evidence_map:
-                    _set_evidence_value(evidence_map[node], node_wires)
-                    continue
+                # Do not short-circuit encoding for evidence nodes.
+                # Evidence should be applied by post-selecting samples after
+                # preparing the full joint state P(nodes). Skipping encoding
+                # here removes the likelihood factors P(evidence|parents)
+                # and yields incorrect posteriors for the query variables.
 
                 if len(parents) == 0:
                     probs = [float(vals[state, 0]) for state in range(variable_card)]

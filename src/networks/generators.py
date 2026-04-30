@@ -41,6 +41,11 @@ def generate_ship_localization_bn(
             (max(1, 5 * grid_size // 6), max(1, grid_size // 4)),
         ]
 
+    if all(w == 0.0 for w in dist_noise):
+        dist_noise = (1.0, 0.0, 0.0, 0.0)
+    if all(w == 0.0 for w in bear_noise):
+        bear_noise = (1.0, 0.0, 0.0, 0.0)
+
     nodes = ["X", "Y"]
     for i in range(1, len(lighthouses) + 1):
         nodes.extend([f"Dist{i}", f"Bear{i}"])
@@ -53,8 +58,9 @@ def generate_ship_localization_bn(
         edges.extend([("X", f"Dist{i}"), ("Y", f"Dist{i}"), ("X", f"Bear{i}"), ("Y", f"Bear{i}")])
     model.add_edges_from(edges)
 
-    def _discretize_distance(dist: float) -> int:
-        max_dist = np.hypot(grid_size - 1, grid_size - 1)
+    def _discretize_distance(dist: float, max_dist: float) -> int:
+        if max_dist <= 0.0:
+            max_dist = 1.0
         bin_idx = int(min(num_dist_bins - 1, dist * num_dist_bins / max_dist))
         return bin_idx
 
@@ -81,13 +87,18 @@ def generate_ship_localization_bn(
     model.add_cpds(TabularCPD(variable="Y", variable_card=grid_size, values=y_values))
 
     for lh_idx, (lh_x, lh_y) in enumerate(lighthouses, 1):
+        max_dist = max(
+            np.hypot(corner_x - lh_x, corner_y - lh_y)
+            for corner_x in (0, grid_size - 1)
+            for corner_y in (0, grid_size - 1)
+        )
         dist_values: List[List[float]] = []
         for dist_bin in range(num_dist_bins):
             row: List[float] = []
-            for y in range(grid_size):
-                for x in range(grid_size):
+            for x in range(grid_size):
+                for y in range(grid_size):
                     true_dist = np.hypot(x - lh_x, y - lh_y)
-                    true_bin = _discretize_distance(true_dist)
+                    true_bin = _discretize_distance(true_dist, max_dist)
                     bin_diff = abs(dist_bin - true_bin)
 
                     if bin_diff == 0:
@@ -114,8 +125,8 @@ def generate_ship_localization_bn(
         bear_values: List[List[float]] = []
         for bear_bin in range(num_bear_bins):
             row: List[float] = []
-            for y in range(grid_size):
-                for x in range(grid_size):
+            for x in range(grid_size):
+                for y in range(grid_size):
                     dx = lh_x - x
                     dy = lh_y - y
                     true_bearing = 0.0 if dx == 0 and dy == 0 else np.arctan2(dy, dx)
