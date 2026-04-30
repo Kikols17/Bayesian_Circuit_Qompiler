@@ -1,0 +1,43 @@
+experiment:
+  name: "ship_localization_qaa"
+  output_dir: "outputs/ship_localization_qaa"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 8
+    lighthouses:
+      - [1, 1]
+      - [6, 2]
+    num_dist_bins: 20
+    num_bear_bins: 16
+    dist_noise: [0.0, 0.0, 0.0, 0.0]
+    bear_noise: [0.0, 0.0, 0.0, 0.0]
+
+inference:
+  compiler: "QAA"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 512
+    seed: 123
+  backend:
+    type: "pennylane.simulator"
+    device: "default.qubit"
+    wires: null
+  evidence:
+    Dist1: 2
+    Bear1: 7
+    Dist2: 10
+    Bear2: 3
+  query:
+    - "X"
+    - "Y"

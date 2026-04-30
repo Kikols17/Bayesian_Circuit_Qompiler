@@ -1,0 +1,34 @@
+experiment:
+  name: "random_bn_qaa"
+  output_dir: "outputs/random_bn_qaa"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  seed: 42
+  type: "random"
+  params:
+    num_nodes: 5
+    max_parents: 2
+    max_states: 3
+
+inference:
+  compiler: "QAA"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 512
+    seed: 123
+  backend:
+    type: "pennylane.simulator"
+    device: "default.qubit"
+    wires: null
+  evidence: {}
+  query:
+    - "X0"
