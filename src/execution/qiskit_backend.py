@@ -9,6 +9,14 @@ try:
 except Exception:
     Aer = None
 
+try:
+    from qiskit.providers.aer.noise import NoiseModel
+except Exception:
+    try:
+        from qiskit_aer.noise import NoiseModel
+    except Exception:
+        NoiseModel = None
+
 from src.circuit_builder import get_circuit_builder
 from src.circuits.visualize import save_qiskit_circuit_image
 from src.config.types import BackendConfig, CircuitConfig
@@ -113,6 +121,21 @@ def run_qiskit(
     backend = None
 
     use_ibm = False
+
+    # Support a noisy simulator target using the prefix `noisy:TARGET_NAME`.
+    # Example: `noisy:ibm_fez` will build a NoiseModel from the IBM backend
+    # `ibm_fez` (via provider/runtime/IBMQ) and run locally on Aer with that
+    # noise model.
+    noisy_sim = False
+    noise_source_backend_name = None
+    noise_model = None
+    if isinstance(backend_name, str) and backend_name.startswith("noisy:"):
+        noisy_sim = True
+        parts = backend_name.split(":", 1)
+        noise_source_backend_name = parts[1] if len(parts) > 1 else None
+        backend_name = "aer_simulator"
+        if noise_source_backend_name and noise_source_backend_name.startswith("ibm"):
+            use_ibm = True
     if backend_config and getattr(backend_config, "type", "").lower().find("ibm") != -1:
         use_ibm = True
     if isinstance(backend_name, str) and backend_name.startswith("ibmq"):
@@ -296,7 +319,104 @@ def run_qiskit(
                 pass
 
         if backend is None:
-            raise RuntimeError("No IBM hardware backend available; ensure your account has access to a real device and the token is valid.")
+            # If user requested a noisy simulator, attempt to build a noise
+            # model from the requested IBM target and run locally on Aer.
+            if noisy_sim and noise_source_backend_name:
+                target_backend = None
+                # try provider
+                if provider is not None:
+                    try:
+                        target_backend = provider.get_backend(noise_source_backend_name)
+                    except Exception:
+                        try:
+                            prov_backends = provider.backends()
+                        except Exception:
+                            try:
+                                prov_backends = provider.available_backends()
+                            except Exception:
+                                prov_backends = None
+                        if prov_backends:
+                            for b in prov_backends:
+                                name = _name_of_backend(b)
+                                if name and name.lower() == noise_source_backend_name.lower():
+                                    try:
+                                        target_backend = provider.get_backend(name)
+                                        break
+                                    except Exception:
+                                        continue
+
+                # try runtime service
+                if target_backend is None and service is not None:
+                    try:
+                        target_backend = service.get_backend(noise_source_backend_name)
+                    except Exception:
+                        try:
+                            svc_backends = service.backends()
+                        except Exception:
+                            try:
+                                svc_backends = service.available_backends()
+                            except Exception:
+                                svc_backends = None
+                        if svc_backends:
+                            for b in svc_backends:
+                                name = _name_of_backend(b)
+                                if name and name.lower() == noise_source_backend_name.lower():
+                                    try:
+                                        target_backend = service.get_backend(name)
+                                        break
+                                    except Exception:
+                                        continue
+
+                # try legacy IBMQ
+                if target_backend is None:
+                    try:
+                        try:
+                            from qiskit.providers.ibmq import IBMQ as IBMQ_class  # type: ignore
+                        except Exception:
+                            try:
+                                from qiskit import IBMQ as IBMQ_class  # type: ignore
+                            except Exception:
+                                IBMQ_class = None
+
+                        if IBMQ_class is not None:
+                            try:
+                                prov = IBMQ_class.get_provider()
+                                try:
+                                    target_backend = prov.get_backend(noise_source_backend_name)
+                                except Exception:
+                                    try:
+                                        ibmq_backends = IBMQ_class.backends()
+                                        for b in ibmq_backends:
+                                            name = _name_of_backend(b)
+                                            if name and name.lower() == noise_source_backend_name.lower():
+                                                try:
+                                                    target_backend = prov.get_backend(name)
+                                                    break
+                                                except Exception:
+                                                    continue
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                # Build noise model from discovered target backend
+                if target_backend is not None and NoiseModel is not None:
+                    try:
+                        noise_model = NoiseModel.from_backend(target_backend)
+                    except Exception:
+                        noise_model = None
+
+                if noise_model is not None:
+                    if Aer is None:
+                        raise RuntimeError("Aer is required for noisy simulation.")
+                    backend = Aer.get_backend(backend_name)
+                    backend_name = f"noisy:{noise_source_backend_name}"
+                else:
+                    raise RuntimeError("Requested noisy simulator target not available or noise model could not be created.")
+            else:
+                raise RuntimeError("No IBM hardware backend available; ensure your account has access to a real device and the token is valid.")
 
     # If not using IBM or no IBM backend, fall back to Aer
     if backend is None:
@@ -320,13 +440,19 @@ def run_qiskit(
 
     # Submit job to selected backend. Try backend.run first, otherwise use runtime service
     try:
+        run_kwargs = {"shots": circuit_config.shots, "memory": True}
+        if noise_model is not None:
+            run_kwargs["noise_model"] = noise_model
+
         if hasattr(backend, "run"):
-            job = backend.run(circuit, shots=circuit_config.shots, memory=True)
+            job = backend.run(circuit, **run_kwargs)
         else:
             if service is not None:
-                job = service.run(backend_name, circuit=circuit, shots=circuit_config.shots, memory=True)
+                # `service.run` has a different signature (backend_name, ...)
+                svc_kwargs = {"circuit": circuit, "shots": circuit_config.shots, "memory": True}
+                job = service.run(backend_name, **svc_kwargs)
             else:
-                job = backend.run(circuit, shots=circuit_config.shots, memory=True)
+                job = backend.run(circuit, **run_kwargs)
     except Exception:
         raise
 
