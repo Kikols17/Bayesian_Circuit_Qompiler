@@ -1,0 +1,41 @@
+experiment:
+  name: "ship_localization_ibmq"
+  output_dir: "outputs/ship_localization_ibmq"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 8
+    lighthouses:
+      - [1, 1]
+    num_dist_bins: 8
+    num_bear_bins: 8
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+
+inference:
+  compiler: "DCM"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 32
+    seed: 123
+  backend:
+    type: "qiskit_ibm"
+    # Set a target IBM backend here, e.g. 'ibmq_qasm_simulator' or 'ibmq_manila'
+    device: "ibmq_qasm_simulator"
+    wires: 8
+  evidence:
+    Dist1: 2
+    Bear1: 5
+  query:
+    - "X"
+    - "Y"

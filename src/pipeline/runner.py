@@ -9,7 +9,11 @@ from typing import Any, Dict, List
 from src.config.loader import load_config
 from src.execution.pennylane_backend import run_pennylane
 from src.execution.qiskit_backend import run_qiskit
-from src.metrics.plots import save_probabilities_plot
+from src.metrics.plots import (
+    save_probabilities_plot,
+    compute_prob_history_from_samples,
+    save_probability_evolution_plot,
+)
 from src.metrics.tracker import save_metrics
 from src.network_builder import get_network_builder
 from src.networks.export import save_cpd_markdown
@@ -147,6 +151,28 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
             wires_map=circuit_spec.wires_map,
             baseline_distribution=baseline_distribution,
         )
+
+    # compute and save probability evolution (top outcomes by final prob)
+    evolution_path = None
+    raw_samples = run_result.get("raw")
+    if raw_samples is not None:
+        try:
+            hist = compute_prob_history_from_samples(
+                raw_samples, circuit_spec.wires_map, config.inference.query, config.inference.evidence
+            )
+            # save raw samples for debugging/tracing
+            write_json(f"{output_dir}/raw_samples.json", {"samples": raw_samples})
+            evolution_path = save_probability_evolution_plot(
+                output_dir,
+                hist,
+                title=f"{config.name} probability evolution",
+                filename="prob_evolution_top10.png",
+                query=config.inference.query,
+                wires_map=circuit_spec.wires_map,
+                top_n=10,
+            )
+        except Exception:
+            evolution_path = None
 
     def _format_quantum_distribution(
         probs: List[float], query: List[str], wires_map: Dict[str, List[int]]

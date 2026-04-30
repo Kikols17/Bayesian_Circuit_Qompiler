@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import matplotlib
 
 matplotlib.use("Agg")
@@ -182,6 +183,177 @@ def save_probabilities_plot(
     plt.title(title)
     plt.xlabel("Outcome")
     plt.ylabel("Probability")
+    plt.tight_layout()
+    path = f"{output_dir}/{filename}"
+    plt.savefig(path, dpi=150)
+    plt.close()
+    return path
+
+
+def compute_prob_history_from_samples(
+    samples: Any,
+    wires_map: Dict[str, List[int]],
+    query: Optional[List[str]] = None,
+    evidence: Optional[Dict[str, int]] = None,
+) -> List[List[float]]:
+    """Compute a per-shot probability history for the specified `query`.
+
+    - `samples` may be a numpy array of shape `(shots, num_wires)` or a list of
+      bitstrings (as returned by Qiskit `result.get_memory()`).
+    - Returns a list of distributions (one per matched shot). If `evidence` is
+      provided, only samples matching the evidence are counted (post-selection).
+    """
+    if samples is None:
+        return []
+
+    query_nodes = query if query else list(wires_map.keys())
+    query_wires = [w for node in query_nodes for w in wires_map[node]]
+    evidence_nodes = list(evidence.keys()) if evidence else []
+
+    num_outcomes = 2 ** len(query_wires)
+    counts = np.zeros(num_outcomes, dtype=float)
+    matched = 0
+    history: List[List[float]] = []
+
+    # helper: map wire -> position in measured classical register (if present)
+    wire_to_pos: Dict[int, int] = {w: i for i, w in enumerate(query_wires)}
+
+    def _decode_from_array(sample) -> int:
+        bits = [str(int(sample[w])) for w in query_wires]
+        return int("".join(bits), 2) if bits else 0
+
+    def _decode_node_from_array(sample, node_wires: List[int]) -> int:
+        if not node_wires:
+            return 0
+        bits = [str(int(sample[w])) for w in node_wires]
+        return int("".join(bits), 2)
+
+    def _decode_from_bitstring(s: str) -> int:
+        s_clean = s.strip()
+        # Qiskit memory strings are printed MSB..LSB; reverse so index -> classical bit
+        s_rev = s_clean[::-1]
+        bits: List[str] = []
+        for node in query_nodes:
+            for w in wires_map[node]:
+                if w in wire_to_pos and wire_to_pos[w] < len(s_rev):
+                    bits.append(s_rev[wire_to_pos[w]])
+                else:
+                    bits.append("0")
+        return int("".join(bits), 2) if bits else 0
+
+    def _decode_node_from_bitstring(s: str, node_wires: List[int]) -> int:
+        s_clean = s.strip()
+        s_rev = s_clean[::-1]
+        bits = [s_rev[wire_to_pos[w]] if w in wire_to_pos and wire_to_pos[w] < len(s_rev) else "0" for w in node_wires]
+        return int("".join(bits), 2) if bits else 0
+
+    # iterate samples and accumulate counts only for samples matching evidence
+    if isinstance(samples, np.ndarray):
+        if samples.ndim != 2:
+            return []
+        for sample in samples:
+            matches = True
+            for node in evidence_nodes:
+                node_val = _decode_node_from_array(sample, wires_map[node])
+                if node_val != evidence[node]:
+                    matches = False
+                    break
+            if not matches:
+                continue
+
+            matched += 1
+            idx = _decode_from_array(sample)
+            if 0 <= idx < num_outcomes:
+                counts[idx] += 1
+
+            if matched > 0:
+                history.append((counts / float(matched)).tolist())
+        return history
+
+    # assume iterable of bitstrings
+    try:
+        for s in samples:
+            if not isinstance(s, str):
+                s = str(s)
+            matches = True
+            for node in evidence_nodes:
+                # only able to check evidence for nodes that map to measured bits
+                if any(w in wire_to_pos for w in wires_map[node]):
+                    node_val = _decode_node_from_bitstring(s, wires_map[node])
+                    if node_val != evidence[node]:
+                        matches = False
+                        break
+                else:
+                    # if evidence wires were not measured, we cannot post-select; skip
+                    matches = False
+                    break
+            if not matches:
+                continue
+
+            matched += 1
+            idx = _decode_from_bitstring(s)
+            if 0 <= idx < num_outcomes:
+                counts[idx] += 1
+
+            if matched > 0:
+                history.append((counts / float(matched)).tolist())
+        return history
+    except Exception:
+        return []
+
+
+def save_probability_evolution_plot(
+    output_dir: str,
+    prob_history: List[List[float]],
+    title: str,
+    filename: str = "prob_evolution.png",
+    query: Optional[List[str]] = None,
+    wires_map: Optional[Dict[str, List[int]]] = None,
+    top_n: int = 10,
+) -> str:
+    """Save a plot showing evolution of probabilities over matched shots.
+
+    The plot shows the top `top_n` outcomes sorted by final probability.
+    """
+    ensure_dir(output_dir)
+    if not prob_history:
+        return ""
+
+    hist = np.array(prob_history)
+    if hist.size == 0:
+        return ""
+
+    final = hist[-1]
+    max_k = min(top_n, final.size)
+    order = np.argsort(-final)
+    top_idx = order[:max_k]
+
+    def _index_label(idx: int) -> str:
+        if query is None or wires_map is None or len(query) <= 1:
+            return str(idx)
+        # build label like node=val,node2=val2
+        node_sizes = [len(wires_map[node]) for node in query]
+        total_bits = sum(node_sizes)
+        bitstr = format(idx, f"0{total_bits}b")
+        pos = 0
+        coords = []
+        for node, size in zip(query, node_sizes):
+            seg = bitstr[pos : pos + size]
+            pos += size
+            coords.append(str(int(seg, 2)))
+        return ",".join(f"{n}={v}" for n, v in zip(query, coords))
+
+    shots = np.arange(1, hist.shape[0] + 1)
+    plt.figure(figsize=(10, 6))
+    cmap = plt.get_cmap("tab10")
+    for i, idx in enumerate(top_idx):
+        color = cmap(i % 10)
+        plt.plot(shots, hist[:, idx], label=f"{_index_label(int(idx))} ({final[int(idx)]:.3f})", color=color)
+
+    plt.xlabel("Matched Shots")
+    plt.ylabel("Probability")
+    plt.title(title)
+    plt.legend(loc="best", fontsize="small")
     plt.tight_layout()
     path = f"{output_dir}/{filename}"
     plt.savefig(path, dpi=150)

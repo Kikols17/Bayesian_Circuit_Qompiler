@@ -1,0 +1,35 @@
+experiment:
+  name: "random_bn_dcm"
+  output_dir: "outputs/random_bn_dcm"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  seed: 17
+  type: "random"
+  params:
+    num_nodes: 5
+    max_parents: 2
+    max_states: 3
+
+inference:
+  compiler: "DCM"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 1024
+    seed: 123
+  backend:
+    type: "qiskit_ibm"
+    # Set a target IBM backend here, e.g. 'ibmq_qasm_simulator' or 'ibmq_manila'
+    device: "ibm_fez"
+    wires: 8
+  evidence: {}
+  query:
+    - "X0"
