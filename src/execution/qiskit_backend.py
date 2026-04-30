@@ -10,12 +10,14 @@ except Exception:
     Aer = None
 
 try:
-    from qiskit.providers.aer.noise import NoiseModel
+    from qiskit.providers.aer.noise import NoiseModel, depolarizing_error, ReadoutError
 except Exception:
     try:
-        from qiskit_aer.noise import NoiseModel
+        from qiskit_aer.noise import NoiseModel, depolarizing_error, ReadoutError
     except Exception:
         NoiseModel = None
+        depolarizing_error = None
+        ReadoutError = None
 
 from src.circuit_builder import get_circuit_builder
 from src.circuits.visualize import save_qiskit_circuit_image
@@ -405,8 +407,81 @@ def run_qiskit(
                 if target_backend is not None and NoiseModel is not None:
                     try:
                         noise_model = NoiseModel.from_backend(target_backend)
+                    except Exception as e:
+                        logger = logging.getLogger(__name__)
+                        logger.exception("NoiseModel.from_backend failed for %s: %s", noise_source_backend_name, e)
+                        # Try retrieving backend properties via service/provider/legacy and build from that
+                        props = None
+                        try:
+                            if service is not None and hasattr(service, "backend_properties"):
+                                try:
+                                    props = service.backend_properties(noise_source_backend_name)
+                                    logger.debug("Got backend properties from service: %s", type(props))
+                                except Exception:
+                                    logger.exception("service.backend_properties failed for %s", noise_source_backend_name)
+                        except Exception:
+                            logger.exception("service.backend_properties attempt error")
+
+                        if props is None and provider is not None:
+                            try:
+                                if hasattr(provider, "backend_properties"):
+                                    try:
+                                        props = provider.backend_properties(noise_source_backend_name)
+                                        logger.debug("Got backend properties from provider: %s", type(props))
+                                    except Exception:
+                                        logger.exception("provider.backend_properties failed for %s", noise_source_backend_name)
+                            except Exception:
+                                logger.exception("provider.backend_properties attempt error")
+
+                        if props is None:
+                            try:
+                                if hasattr(target_backend, "properties"):
+                                    try:
+                                        props = target_backend.properties()
+                                        logger.debug("Got backend.properties(): %s", type(props))
+                                    except Exception:
+                                        logger.exception("target_backend.properties() call failed for %s", noise_source_backend_name)
+                            except Exception:
+                                logger.exception("target_backend.properties attempt error")
+
+                        if props is not None:
+                            try:
+                                noise_model = NoiseModel.from_backend(props)
+                            except Exception:
+                                logger.exception("NoiseModel.from_backend(props) failed for %s", noise_source_backend_name)
+
+                # If we still don't have a noise model, try constructing an
+                # approximate local noise model (depolarizing + readout).
+                if noise_model is None and NoiseModel is not None:
+                    try:
+                        # reasonable defaults for single- and two-qubit errors
+                        p1 = 1e-3
+                        p2 = 2e-2
+                        readout_p = 0.02
+                        try:
+                            dep_err = depolarizing_error
+                            RO = ReadoutError
+                        except Exception:
+                            dep_err = None
+                            RO = None
+
+                        if dep_err is not None:
+                            nm = NoiseModel()
+                            e1 = dep_err(p1, 1)
+                            e2 = dep_err(p2, 2)
+                            # add common single-qubit and two-qubit gate errors
+                            nm.add_all_qubit_quantum_error(e1, ["u1", "u2", "u3", "x", "y", "z", "h", "rx", "ry", "rz", "sx", "sxdg", "id"])
+                            nm.add_all_qubit_quantum_error(e2, ["cx", "cz"])
+                            try:
+                                if RO is not None:
+                                    ro = RO([[1 - readout_p, readout_p], [readout_p, 1 - readout_p]])
+                                    nm.add_all_qubit_readout_error(ro, range(circuit.num_qubits))
+                            except Exception:
+                                logger.exception("Failed to add readout error to approximate noise model")
+                            noise_model = nm
+                            logger.info("Using approximate local noise model (p1=%s, p2=%s, readout=%s)", p1, p2, readout_p)
                     except Exception:
-                        noise_model = None
+                        logging.getLogger(__name__).exception("Failed to construct approximate noise model")
 
                 if noise_model is not None:
                     if Aer is None:
