@@ -15,6 +15,7 @@ from src.metrics.plots import (
     save_probability_evolution_plot,
 )
 from src.metrics.tracker import save_metrics
+from src.metrics import wandb_logger
 from src.network_builder import get_network_builder
 from src.networks.export import save_cpd_markdown
 from src.networks.visualize import save_bayesian_network_plot
@@ -35,6 +36,7 @@ def _load_env() -> None:
 def run_pipeline(config_path: str) -> Dict[str, Any]:
     _load_env()
     config = load_config(config_path)
+    wandb_logger.init_run(config)
     output_base = Path(config.output_dir)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = str(output_base.parent / f"{timestamp}_{output_base.name}")
@@ -77,6 +79,7 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
 
     network_builder = get_network_builder(config.network.builder)
     network = network_builder.build(config.network)
+    wandb_logger.log_network_metrics(network)
     if config.network.save_image:
         network_image_path = save_bayesian_network_plot(output_dir, network)
     else:
@@ -111,6 +114,7 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         encoding=config.inference.encoding,
     )
     compile_time = time.perf_counter() - compile_start
+    wandb_logger.log_compile_metrics(circuit_spec, compile_time)
 
     run_start = time.perf_counter()
     if config.inference.backend.type.startswith("pennylane"):
@@ -154,6 +158,7 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
 
     # compute and save probability evolution (top outcomes by final prob)
     evolution_path = None
+    hist = None
     raw_samples = run_result.get("raw")
     if raw_samples is not None:
         try:
@@ -173,6 +178,7 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
             )
         except Exception:
             evolution_path = None
+    matched_shots = len(hist) if hist is not None else None
 
     def _format_quantum_distribution(
         probs: List[float], query: List[str], wires_map: Dict[str, List[int]]
@@ -231,6 +237,10 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         if isinstance(baseline_distribution, dict) and quantum_distribution is not None:
             baseline_kl = _kl_divergence(baseline_distribution, quantum_distribution)
 
+    wandb_logger.log_run_metrics(run_result, run_time, config.inference.circuit.shots, matched_shots)
+    wandb_logger.log_accuracy_metrics(baseline_distribution, quantum_distribution, baseline_kl, baseline_time, run_time)
+    wandb_logger.log_convergence_series(hist or [], baseline_distribution, step_size=10)
+
     result_payload = {
         "quantum_result": run_result,
         "baseline_result": baseline_result,
@@ -263,4 +273,5 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
     save_metrics(output_dir, metrics_payload)
     write_json(f"{output_dir}/result.json", result_payload)
 
+    wandb_logger.finish()
     return metrics_payload

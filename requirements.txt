@@ -99,4 +99,5 @@ tzdata==2025.2
 urllib3==2.6.3
 websocket-client==1.9.0
 websockets==16.0
+wandb
 wheel==0.47.0
