@@ -60,7 +60,7 @@ inference:
     device: "ibmq_qasm_simulator"
     #type: "pennylane.simulator"
     #device: "default.qubit"
-    wires: 12
+    wires: 16
   evidence:
     Dist1: 2
     Bear1: 3

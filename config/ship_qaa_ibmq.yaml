@@ -1,0 +1,43 @@
+experiment:
+  name: "ship_localization_qaa_ibmq"
+  output_dir: "outputs/ship_localization_qaa_ibmq"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 4
+    lighthouses:
+      - [1, 1]
+      - [3, 2]
+    num_dist_bins: 4
+    num_bear_bins: 4
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+
+inference:
+  compiler: "QAA"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 4096
+    seed: 123
+  backend:
+    type: "qiskit_ibm"
+    device: "ibm_fez"
+    wires: 4
+  evidence:
+    Dist1: 2
+    Bear1: 3
+    Dist2: 3
+    Bear2: 1
+  query:
+    - "X"
+    - "Y"
