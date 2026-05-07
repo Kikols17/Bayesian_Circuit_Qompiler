@@ -179,8 +179,9 @@ def run_qiskit(
                     service = RuntimeService()
 
                 # try exact name
+                _svc_get = getattr(service, "backend", None) or getattr(service, "get_backend", None)
                 try:
-                    backend = service.get_backend(backend_name)
+                    backend = _svc_get(backend_name)
                 except Exception:
                     # enumerate and pick a hardware device
                     backends_list = None
@@ -198,7 +199,7 @@ def run_qiskit(
                             name = _name_of_backend(b)
                             if name and name.lower() == backend_name.lower():
                                 try:
-                                    backend = service.get_backend(name)
+                                    backend = _svc_get(name)
                                     backend_name = name
                                     break
                                 except Exception:
@@ -211,7 +212,7 @@ def run_qiskit(
                                     continue
                                 try:
                                     if _is_hardware_backend_obj(b, name):
-                                        backend = service.get_backend(name)
+                                        backend = _svc_get(name)
                                         backend_name = name
                                         break
                                 except Exception:
@@ -349,8 +350,9 @@ def run_qiskit(
 
                 # try runtime service
                 if target_backend is None and service is not None:
+                    _svc_get2 = getattr(service, "backend", None) or getattr(service, "get_backend", None)
                     try:
-                        target_backend = service.get_backend(noise_source_backend_name)
+                        target_backend = _svc_get2(noise_source_backend_name)
                     except Exception:
                         try:
                             svc_backends = service.backends()
@@ -364,7 +366,7 @@ def run_qiskit(
                                 name = _name_of_backend(b)
                                 if name and name.lower() == noise_source_backend_name.lower():
                                     try:
-                                        target_backend = service.get_backend(name)
+                                        target_backend = _svc_get2(name)
                                         break
                                     except Exception:
                                         continue
@@ -501,7 +503,6 @@ def run_qiskit(
 
     circuit = circuit.copy()
     circuit = circuit.decompose(reps=1)
-    circuit = circuit.bind_parameters({})
 
     circuit_stats = {
         "num_qubits": circuit.num_qubits,
@@ -513,31 +514,47 @@ def run_qiskit(
     if save_circuit_image:
         circuit_image = save_qiskit_circuit_image(output_dir, circuit)
 
-    # Submit job to selected backend. Try backend.run first, otherwise use runtime service
-    try:
-        run_kwargs = {"shots": circuit_config.shots, "memory": True}
+    counts: Dict[str, int] = {}
+    memory = None
+
+    if service is not None:
+        # qiskit-ibm-runtime 0.40+ removed backend.run(); use SamplerV2 primitives.
+        from qiskit_ibm_runtime import SamplerV2
+        from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+        pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+        isa_circuit = pm.run(circuit)
+
+        sampler = SamplerV2(mode=backend)
+        job = sampler.run([isa_circuit], shots=circuit_config.shots)
+        result = job.result()
+
+        pub_result = result[0]
+        for creg in isa_circuit.cregs:
+            try:
+                bit_array = getattr(pub_result.data, creg.name)
+                for bitstring, count in bit_array.get_counts().items():
+                    counts[bitstring] = counts.get(bitstring, 0) + count
+            except Exception:
+                pass
+        try:
+            first_creg = isa_circuit.cregs[0]
+            memory = getattr(pub_result.data, first_creg.name).get_bitstrings()
+        except Exception:
+            memory = None
+    else:
+        # Aer local simulator — backend.run() still works here
+        run_kwargs: Dict[str, Any] = {"shots": circuit_config.shots, "memory": True}
         if noise_model is not None:
             run_kwargs["noise_model"] = noise_model
+        job = backend.run(circuit, **run_kwargs)
+        result = job.result()
+        counts = result.get_counts()
+        try:
+            memory = result.get_memory()
+        except Exception:
+            memory = None
 
-        if hasattr(backend, "run"):
-            job = backend.run(circuit, **run_kwargs)
-        else:
-            if service is not None:
-                # `service.run` has a different signature (backend_name, ...)
-                svc_kwargs = {"circuit": circuit, "shots": circuit_config.shots, "memory": True}
-                job = service.run(backend_name, **svc_kwargs)
-            else:
-                job = backend.run(circuit, **run_kwargs)
-    except Exception:
-        raise
-
-    result = job.result()
-    counts = result.get_counts()
-    memory = None
-    try:
-        memory = result.get_memory()
-    except Exception:
-        memory = None
     total_shots = sum(counts.values())
     probs = {key: val / total_shots for key, val in counts.items()}
 
