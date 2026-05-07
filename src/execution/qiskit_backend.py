@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import logging
 
+import numpy as np
+
 try:
     from qiskit_aer import Aer
 except Exception:
@@ -23,6 +25,60 @@ from src.circuit_builder import get_circuit_builder
 from src.circuits.visualize import save_qiskit_circuit_image
 from src.config.types import BackendConfig, CircuitConfig
 from src.qompiler.base import CircuitSpec
+
+
+def _bitstrings_to_array(bitstrings: List[str], num_wires: int) -> np.ndarray:
+    """Convert Qiskit bitstrings to a (shots, num_wires) int8 array.
+
+    Qiskit bitstring format: rightmost character = classical bit 0 = qubit 0.
+    Reversing puts position i = classical bit i = qubit i.
+    """
+    arr = np.zeros((len(bitstrings), num_wires), dtype=np.int8)
+    for shot_idx, bs in enumerate(bitstrings):
+        bs_rev = bs[::-1]
+        for wire in range(min(num_wires, len(bs_rev))):
+            arr[shot_idx, wire] = int(bs_rev[wire])
+    return arr
+
+
+def _samples_to_probs_list(
+    samples: np.ndarray,
+    wires_map: Dict[str, List[int]],
+    query: List[str],
+    evidence: Dict[str, int],
+) -> List[float]:
+    """Post-select on evidence and return marginal probability list for query.
+
+    samples: (shots, num_wires) int8 array where samples[shot, wire] = bit value.
+    Returns list of length 2^(total query bits), ordered by outcome index
+    where query[0] occupies the MSBs.
+    """
+    query_wires = [w for node in query for w in wires_map[node]]
+    num_outcomes = 2 ** len(query_wires)
+    outcome_counts: List[int] = [0] * num_outcomes
+    total = 0
+
+    for shot in samples:
+        if evidence:
+            match = True
+            for node, val in evidence.items():
+                node_wires = wires_map[node]
+                node_val = int("".join(str(int(shot[w])) for w in node_wires), 2)
+                if node_val != val:
+                    match = False
+                    break
+            if not match:
+                continue
+
+        bits = "".join(str(int(shot[w])) for w in query_wires)
+        idx = int(bits, 2) if bits else 0
+        if 0 <= idx < num_outcomes:
+            outcome_counts[idx] += 1
+            total += 1
+
+    if total == 0:
+        return [0.0] * num_outcomes
+    return [c / total for c in outcome_counts]
 
 
 def _get_token_from_env() -> Tuple[Optional[str], Optional[str]]:
@@ -514,16 +570,29 @@ def run_qiskit(
     if save_circuit_image:
         circuit_image = save_qiskit_circuit_image(output_dir, circuit)
 
-    counts: Dict[str, int] = {}
-    memory = None
+    num_wires = circuit.num_qubits
+    bitstrings: Optional[List[str]] = None
 
     if service is not None:
         # qiskit-ibm-runtime 0.40+ removed backend.run(); use SamplerV2 primitives.
         from qiskit_ibm_runtime import SamplerV2
         from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
+        print(f"\n--- IBM Hardware Job Summary (pre-transpile) ---")
+        print(f"  Backend      : {backend_name}")
+        print(f"  Qubits       : {circuit.num_qubits}")
+        print(f"  Gates (total): {sum(circuit.count_ops().values())}")
+        print(f"  Shots        : {circuit_config.shots}")
+        print(f"  Note: gate count will increase after transpilation")
+        print(f"------------------------------------------------")
+        confirm = input("Submit to hardware? [y/N] ").strip().lower()
+        if confirm != "y":
+            raise RuntimeError("Hardware job cancelled by user.")
+
+        print("Transpiling circuit for hardware...")
         pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
         isa_circuit = pm.run(circuit)
+        print(f"Transpiled: {isa_circuit.num_qubits} qubits, {sum(isa_circuit.count_ops().values())} gates")
 
         sampler = SamplerV2(mode=backend)
         job = sampler.run([isa_circuit], shots=circuit_config.shots)
@@ -532,16 +601,10 @@ def run_qiskit(
         pub_result = result[0]
         for creg in isa_circuit.cregs:
             try:
-                bit_array = getattr(pub_result.data, creg.name)
-                for bitstring, count in bit_array.get_counts().items():
-                    counts[bitstring] = counts.get(bitstring, 0) + count
+                bitstrings = getattr(pub_result.data, creg.name).get_bitstrings()
+                break
             except Exception:
                 pass
-        try:
-            first_creg = isa_circuit.cregs[0]
-            memory = getattr(pub_result.data, first_creg.name).get_bitstrings()
-        except Exception:
-            memory = None
     else:
         # Aer local simulator — backend.run() still works here
         run_kwargs: Dict[str, Any] = {"shots": circuit_config.shots, "memory": True}
@@ -549,19 +612,20 @@ def run_qiskit(
             run_kwargs["noise_model"] = noise_model
         job = backend.run(circuit, **run_kwargs)
         result = job.result()
-        counts = result.get_counts()
         try:
-            memory = result.get_memory()
+            bitstrings = result.get_memory()
         except Exception:
-            memory = None
+            bitstrings = None
 
-    total_shots = sum(counts.values())
-    probs = {key: val / total_shots for key, val in counts.items()}
+    # Convert to (shots, num_wires) array and compute marginal probs list —
+    # same output format as run_pennylane so all downstream plots are generated.
+    raw_array = _bitstrings_to_array(bitstrings, num_wires) if bitstrings else np.zeros((0, num_wires), dtype=np.int8)
+    probs = _samples_to_probs_list(raw_array, spec.wires_map, query, evidence)
 
     return {
-        "counts": counts,
+        "counts": {format(i, f"0{len(spec.wires_map)}b"): int(p * len(bitstrings or [])) for i, p in enumerate(probs) if p > 0},
         "probs": probs,
-        "raw": memory,
+        "raw": raw_array,
         "backend": backend_name,
         "circuit_stats": circuit_stats,
         "circuit_image": circuit_image,

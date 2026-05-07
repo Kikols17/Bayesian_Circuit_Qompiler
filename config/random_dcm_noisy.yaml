@@ -1,0 +1,36 @@
+experiment:
+  name: "random_bn_dcm_noisy"
+  output_dir: "outputs/random_bn_dcm_noisy"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  seed: 17
+  type: "random"
+  params:
+    num_nodes: 5
+    max_parents: 2
+    max_states: 3
+
+inference:
+  compiler: "DCM"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 1024
+    seed: 123
+  backend:
+    type: "qiskit_ibm"
+    # Use the `noisy:` prefix to request a local Aer simulation using the
+    # noise model derived from the named IBM backend. Example: "noisy:ibm_fez"
+    device: "noisy:ibm_fez"
+    wires: 8
+  evidence: {}
+  query:
+    - "X0"
