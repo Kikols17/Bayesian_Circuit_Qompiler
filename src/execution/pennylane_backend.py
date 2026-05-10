@@ -76,7 +76,8 @@ def run_pennylane(
     if isinstance(result, list):
         probs = result
     elif isinstance(result, np.ndarray) and result.ndim == 2:
-        probs = _samples_to_distribution(result, spec.wires_map, query, evidence)
+        postselect_evidence = {k: v for k, v in evidence.items() if k in spec.wires_map}
+        probs = _samples_to_distribution(result, spec.wires_map, query, postselect_evidence)
     else:
         probs = result.tolist() if hasattr(result, "tolist") else list(result)
 

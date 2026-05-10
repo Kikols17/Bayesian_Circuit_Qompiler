@@ -620,7 +620,10 @@ def run_qiskit(
     # Convert to (shots, num_wires) array and compute marginal probs list —
     # same output format as run_pennylane so all downstream plots are generated.
     raw_array = _bitstrings_to_array(bitstrings, num_wires) if bitstrings else np.zeros((0, num_wires), dtype=np.int8)
-    probs = _samples_to_probs_list(raw_array, spec.wires_map, query, evidence)
+    # In pre-conditioned mode (e.g. QAA) evidence variables have no allocated qubits;
+    # their conditioning is already baked into the circuit state, so skip post-selection.
+    postselect_evidence = {k: v for k, v in evidence.items() if k in spec.wires_map}
+    probs = _samples_to_probs_list(raw_array, spec.wires_map, query, postselect_evidence)
 
     return {
         "counts": {format(i, f"0{len(spec.wires_map)}b"): int(p * len(bitstrings or [])) for i, p in enumerate(probs) if p > 0},

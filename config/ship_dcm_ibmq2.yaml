@@ -52,7 +52,7 @@ inference:
     method: "variable_elimination"
     params: {}
   circuit:
-    shots: 32
+    shots: 4096
     seed: 123
   backend:
     type: "qiskit_ibm"
