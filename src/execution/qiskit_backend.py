@@ -558,7 +558,6 @@ def run_qiskit(
         backend = Aer.get_backend(backend_name)
 
     circuit = circuit.copy()
-    circuit = circuit.decompose(reps=1)
 
     circuit_stats = {
         "num_wires": circuit.num_qubits,
@@ -590,11 +589,19 @@ def run_qiskit(
             raise RuntimeError("Hardware job cancelled by user.")
 
         print("Transpiling circuit for hardware...")
-        pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+        pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
         isa_circuit = pm.run(circuit)
         print(f"Transpiled: {isa_circuit.num_qubits} qubits, {sum(isa_circuit.count_ops().values())} gates")
 
-        sampler = SamplerV2(mode=backend)
+        try:
+            from qiskit_ibm_runtime.options import SamplerOptions
+            _opts = SamplerOptions()
+            _opts.dynamical_decoupling.enable = True
+            _opts.twirling.enable_gates = True
+            _opts.twirling.enable_measure = True
+            sampler = SamplerV2(mode=backend, options=_opts)
+        except Exception:
+            sampler = SamplerV2(mode=backend)
         job = sampler.run([isa_circuit], shots=circuit_config.shots)
         result = job.result()
 

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-import numpy as np
 import pennylane as qml
 from qiskit import QuantumCircuit
+from qiskit.circuit.library import StatePreparation
 
 from src.config.types import BackendConfig, CircuitConfig
 from src.qompiler.base import CircuitSpec
@@ -12,64 +12,29 @@ from src.qompiler.base import CircuitSpec
 from .base import CircuitBuilderBase
 
 
-def _encode_amplitudes(
+def _apply_state_prep(
     qc: QuantumCircuit,
-    amplitudes,
+    amps,
     target_wires: list,
     control_wires: list,
 ) -> None:
-    """
-    Encode an amplitude state using a recursive RY/CRY/MCRY decomposition.
+    """Encode amplitudes via Qiskit StatePreparation.
 
-    Replaces StatePreparation + .control() to avoid Qiskit's transpiler hanging
-    on deep controlled state preparations. For n target qubits this emits
-    O(2^n) multi-controlled RY gates which the transpiler handles efficiently.
-
-    The X-MCRY-X sandwich used for 0-valued conditions is the same pattern
-    already used by the 1- and 2-qubit analytical cases in the DCM compiler.
+    Qiskit uses LSB-first qubit ordering; our convention is MSB-first.
+    Reversing target_wires on append aligns the two conventions so that
+    amplitude index idx maps correctly to the measured outcome idx.
     """
-    probs = [float(abs(a)) ** 2 for a in amplitudes]
-    total = sum(probs)
+    arr = [float(abs(a)) for a in amps]
+    total = sum(x ** 2 for x in arr)
     if total <= 0:
         return
-    probs = [p / total for p in probs]
-    _recursive_ry(qc, probs, list(target_wires), list(control_wires))
-
-
-def _recursive_ry(qc: QuantumCircuit, probs: list, wires: list, ctrls: list) -> None:
-    n = len(wires)
-    if n == 0:
-        return
-
-    half = len(probs) // 2
-    p_low = sum(probs[:half])
-    p_high = sum(probs[half:])
-    total = p_low + p_high
-    if total <= 0:
-        return
-
-    angle = 2.0 * float(np.arcsin(np.sqrt(np.clip(p_high / total, 0.0, 1.0))))
-
-    if abs(angle) > 1e-12:
-        if not ctrls:
-            qc.ry(angle, wires[0])
-        elif len(ctrls) == 1:
-            qc.cry(angle, ctrls[0], wires[0])
-        else:
-            qc.mcry(angle, ctrls, wires[0])
-
-    if n == 1:
-        return
-
-    if p_low > 1e-12:
-        cond_low = [p / p_low for p in probs[:half]]
-        qc.x(wires[0])
-        _recursive_ry(qc, cond_low, wires[1:], ctrls + [wires[0]])
-        qc.x(wires[0])
-
-    if p_high > 1e-12:
-        cond_high = [p / p_high for p in probs[half:]]
-        _recursive_ry(qc, cond_high, wires[1:], ctrls + [wires[0]])
+    normalized = [x / total ** 0.5 for x in arr]
+    sp = StatePreparation(normalized)
+    if control_wires:
+        sp = sp.control(len(control_wires))
+        qc.append(sp, list(control_wires) + list(target_wires)[::-1])
+    else:
+        qc.append(sp, list(target_wires)[::-1])
 
 
 class QiskitCircuitBuilder(CircuitBuilderBase):
@@ -104,7 +69,7 @@ class QiskitCircuitBuilder(CircuitBuilderBase):
             elif name == "CRY":
                 qc.cry(float(op.parameters[0]), wires[0], wires[1])
             elif name == "AmplitudeEmbedding":
-                _encode_amplitudes(qc, op.parameters[0], wires, [])
+                _apply_state_prep(qc, op.parameters[0], wires, [])
             elif name.startswith("C("):
                 base = getattr(op, "base", None)
                 if base is None:
@@ -118,7 +83,7 @@ class QiskitCircuitBuilder(CircuitBuilderBase):
                     else:
                         qc.mcry(angle, control_wires, target_wire)
                 elif base.name == "AmplitudeEmbedding":
-                    _encode_amplitudes(qc, base.parameters[0], list(base.wires), control_wires)
+                    _apply_state_prep(qc, base.parameters[0], list(base.wires), control_wires)
                 else:
                     raise ValueError(f"Unsupported controlled base op for Qiskit conversion: {base.name}")
             elif name == "MultiControlledX":
@@ -134,7 +99,7 @@ class QiskitCircuitBuilder(CircuitBuilderBase):
                     else:
                         qc.mcry(angle, control_wires, target_wire)
                 elif base.name == "AmplitudeEmbedding":
-                    _encode_amplitudes(qc, base.parameters[0], list(base.wires), control_wires)
+                    _apply_state_prep(qc, base.parameters[0], list(base.wires), control_wires)
                 else:
                     raise ValueError(f"Unsupported controlled base op for Qiskit conversion: {base.name}")
             else:
