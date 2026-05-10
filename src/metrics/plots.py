@@ -195,27 +195,29 @@ def compute_prob_history_from_samples(
     wires_map: Dict[str, List[int]],
     query: Optional[List[str]] = None,
     evidence: Optional[Dict[str, int]] = None,
-) -> List[List[float]]:
+) -> tuple[List[List[float]], int]:
     """Compute a per-shot probability history for the specified `query`.
 
     - `samples` may be a numpy array of shape `(shots, num_wires)` or a list of
       bitstrings (as returned by Qiskit `result.get_memory()`).
-    - Returns a list of distributions (one per matched shot). If `evidence` is
-      provided, only samples matching the evidence are counted (post-selection).
+    - Returns `(history, matched_count)` where `history` has one entry per total
+      shot (1:1), carrying forward the last distribution for non-matching shots.
+      `matched_count` is the number of shots that satisfied the evidence constraint.
     """
     if samples is None:
-        return []
+        return [], 0
 
     query_nodes = query if query else list(wires_map.keys())
     query_wires = [w for node in query_nodes for w in wires_map[node]]
     evidence_nodes = list(evidence.keys()) if evidence else []
 
     num_outcomes = 2 ** len(query_wires)
+    uniform = [1.0 / num_outcomes] * num_outcomes
     counts = np.zeros(num_outcomes, dtype=float)
     matched = 0
     history: List[List[float]] = []
+    last_dist: List[float] = uniform
 
-    # helper: map wire -> position in measured classical register (if present)
     wire_to_pos: Dict[int, int] = {w: i for i, w in enumerate(query_wires)}
 
     def _decode_from_array(sample) -> int:
@@ -247,59 +249,48 @@ def compute_prob_history_from_samples(
         bits = [s_rev[wire_to_pos[w]] if w in wire_to_pos and wire_to_pos[w] < len(s_rev) else "0" for w in node_wires]
         return int("".join(bits), 2) if bits else 0
 
-    # iterate samples and accumulate counts only for samples matching evidence
     if isinstance(samples, np.ndarray):
         if samples.ndim != 2:
-            return []
+            return [], 0
         for sample in samples:
             matches = True
             for node in evidence_nodes:
-                node_val = _decode_node_from_array(sample, wires_map[node])
-                if node_val != evidence[node]:
+                if _decode_node_from_array(sample, wires_map[node]) != evidence[node]:
                     matches = False
                     break
-            if not matches:
-                continue
+            if matches:
+                matched += 1
+                idx = _decode_from_array(sample)
+                if 0 <= idx < num_outcomes:
+                    counts[idx] += 1
+                last_dist = (counts / float(matched)).tolist()
+            history.append(last_dist)
+        return history, matched
 
-            matched += 1
-            idx = _decode_from_array(sample)
-            if 0 <= idx < num_outcomes:
-                counts[idx] += 1
-
-            if matched > 0:
-                history.append((counts / float(matched)).tolist())
-        return history
-
-    # assume iterable of bitstrings
     try:
         for s in samples:
             if not isinstance(s, str):
                 s = str(s)
             matches = True
             for node in evidence_nodes:
-                # only able to check evidence for nodes that map to measured bits
                 if any(w in wire_to_pos for w in wires_map[node]):
-                    node_val = _decode_node_from_bitstring(s, wires_map[node])
-                    if node_val != evidence[node]:
+                    if _decode_node_from_bitstring(s, wires_map[node]) != evidence[node]:
                         matches = False
                         break
                 else:
-                    # if evidence wires were not measured, we cannot post-select; skip
+                    # evidence wires not measured; cannot post-select
                     matches = False
                     break
-            if not matches:
-                continue
-
-            matched += 1
-            idx = _decode_from_bitstring(s)
-            if 0 <= idx < num_outcomes:
-                counts[idx] += 1
-
-            if matched > 0:
-                history.append((counts / float(matched)).tolist())
-        return history
+            if matches:
+                matched += 1
+                idx = _decode_from_bitstring(s)
+                if 0 <= idx < num_outcomes:
+                    counts[idx] += 1
+                last_dist = (counts / float(matched)).tolist()
+            history.append(last_dist)
+        return history, matched
     except Exception:
-        return []
+        return [], 0
 
 
 def save_probability_evolution_plot(
@@ -350,7 +341,7 @@ def save_probability_evolution_plot(
         color = cmap(i % 10)
         plt.plot(shots, hist[:, idx], label=f"{_index_label(int(idx))} ({final[int(idx)]:.3f})", color=color)
 
-    plt.xlabel("Matched Shots")
+    plt.xlabel("Shots")
     plt.ylabel("Probability")
     plt.title(title)
     plt.legend(loc="best", fontsize="small")

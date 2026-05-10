@@ -169,6 +169,7 @@ def log_convergence_series(
     prob_history: List[List[float]],
     baseline_dist: Optional[Dict[str, float]],
     step_size: int = 10,
+    top_n: int = 10,
 ) -> None:
     w = _wandb()
     if w is None or w.run is None or not prob_history:
@@ -192,6 +193,10 @@ def log_convergence_series(
             if arr.sum() > 0:
                 baseline_arr = arr
 
+        # top-N outcome indices by final probability — stable across all checkpoints
+        final_probs = np.array(prob_history[-1], dtype=float)
+        top_indices = list(np.argsort(-final_probs)[: min(top_n, num_outcomes)])
+
         eps = 1e-12
         checkpoints = list(range(step_size - 1, len(prob_history), step_size))
         if not checkpoints or checkpoints[-1] != len(prob_history) - 1:
@@ -199,7 +204,7 @@ def log_convergence_series(
 
         for i in checkpoints:
             q = np.array(prob_history[i], dtype=float)
-            step_metrics: Dict[str, Any] = {"convergence/matched_shots": i + 1}
+            step_metrics: Dict[str, Any] = {"convergence/shots": i + 1}
 
             if baseline_arr is not None:
                 p = baseline_arr
@@ -209,6 +214,10 @@ def log_convergence_series(
                 step_metrics["convergence/tv_vs_shots"] = tv
 
             step_metrics["convergence/top1_prob_vs_shots"] = float(np.max(q))
+
+            # per-outcome probability for top-N outcomes — one W&B line series each
+            for outcome_idx in top_indices:
+                step_metrics[f"convergence/outcome_{int(outcome_idx)}_prob"] = float(q[outcome_idx])
 
             w.log(step_metrics)
     except Exception:

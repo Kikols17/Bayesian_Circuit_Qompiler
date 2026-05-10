@@ -561,10 +561,10 @@ def run_qiskit(
     circuit = circuit.decompose(reps=1)
 
     circuit_stats = {
-        "num_qubits": circuit.num_qubits,
+        "num_wires": circuit.num_qubits,
         "num_clbits": circuit.num_clbits,
+        "num_operations": sum(circuit.count_ops().values()),
         "operation_counts": dict(circuit.count_ops()),
-        "total_operations": sum(circuit.count_ops().values()),
     }
     circuit_image = None
     if save_circuit_image:
@@ -599,12 +599,29 @@ def run_qiskit(
         result = job.result()
 
         pub_result = result[0]
-        for creg in isa_circuit.cregs:
+        # Enumerate DataBin fields directly — more reliable than mapping isa_circuit.cregs
+        # names to DataBin attributes, which can diverge after transpilation.
+        try:
+            data_keys = list(pub_result.data.keys())
+        except Exception:
+            data_keys = [creg.name for creg in isa_circuit.cregs]
+
+        for field_name in data_keys:
+            bit_array = getattr(pub_result.data, field_name, None)
+            if bit_array is None or not hasattr(bit_array, "get_bitstrings"):
+                continue
             try:
-                bitstrings = getattr(pub_result.data, creg.name).get_bitstrings()
-                break
-            except Exception:
-                pass
+                candidate = bit_array.get_bitstrings()
+                if candidate:
+                    bitstrings = candidate
+                    break
+            except Exception as exc:
+                logger.warning("get_bitstrings() failed for DataBin field '%s': %s", field_name, exc)
+
+        if bitstrings is None:
+            print(f"[hardware] WARNING: no bitstrings extracted. DataBin keys found: {data_keys}")
+        else:
+            print(f"[hardware] Extracted {len(bitstrings)} bitstrings (len={len(bitstrings[0]) if bitstrings else 0})")
     else:
         # Aer local simulator — backend.run() still works here
         run_kwargs: Dict[str, Any] = {"shots": circuit_config.shots, "memory": True}

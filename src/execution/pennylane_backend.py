@@ -109,9 +109,11 @@ def run_pennylane(
     if save_circuit_image:
         circuit_image = save_pennylane_circuit_image(output_dir, qnode)
 
+    raw_samples = result if isinstance(result, np.ndarray) and result.ndim == 2 else None
+
     return {
         "probs": probs,
-        "raw": result,
+        "raw": raw_samples,
         "device": device_name,
         "circuit_stats": circuit_stats,
         "circuit_image": circuit_image,

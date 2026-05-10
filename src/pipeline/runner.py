@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
+
 from src.config.loader import load_config
 from src.execution.pennylane_backend import run_pennylane
 from src.execution.qiskit_backend import run_qiskit
@@ -159,14 +161,22 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
     # compute and save probability evolution (top outcomes by final prob)
     evolution_path = None
     hist = None
+    matched_shots = None
     raw_samples = run_result.get("raw")
     if raw_samples is not None:
         try:
-            hist = compute_prob_history_from_samples(
-                raw_samples, circuit_spec.wires_map, config.inference.query, config.inference.evidence
+            # Only post-select on evidence nodes that have wires in the circuit.
+            # QAA pre-conditions evidence out of the circuit, so those nodes are absent from wires_map.
+            measurable_evidence = {k: v for k, v in config.inference.evidence.items() if k in circuit_spec.wires_map}
+            hist, matched_shots = compute_prob_history_from_samples(
+                raw_samples, circuit_spec.wires_map, config.inference.query, measurable_evidence
             )
-            # save raw samples for debugging/tracing
-            write_json(f"{output_dir}/raw_samples.json", {"samples": raw_samples})
+        except Exception as exc:
+            print(f"[evolution] compute_prob_history_from_samples failed: {exc}")
+            hist, matched_shots = None, None
+
+    if hist:
+        try:
             evolution_path = save_probability_evolution_plot(
                 output_dir,
                 hist,
@@ -178,7 +188,11 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
             )
         except Exception:
             evolution_path = None
-    matched_shots = len(hist) if hist is not None else None
+        try:
+            samples_for_json = raw_samples.tolist() if isinstance(raw_samples, np.ndarray) else list(raw_samples)
+            write_json(f"{output_dir}/raw_samples.json", {"samples": samples_for_json})
+        except Exception:
+            pass
 
     def _format_quantum_distribution(
         probs: List[float], query: List[str], wires_map: Dict[str, List[int]]
