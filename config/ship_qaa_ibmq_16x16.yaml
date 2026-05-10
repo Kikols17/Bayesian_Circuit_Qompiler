@@ -14,8 +14,8 @@ network:
     lighthouses:
       - [1, 5]
       - [3, 12]
-    num_dist_bins: 8
-    num_bear_bins: 8
+    num_dist_bins: 16
+    num_bear_bins: 16
     dist_noise: [0.95, 0.03, 0.01, 0.01]
     bear_noise: [0.95, 0.03, 0.01, 0.01]
 
@@ -27,17 +27,17 @@ inference:
     method: "variable_elimination"
     params: {}
   circuit:
-    shots: 4096
+    shots: 16384
     seed: 123
   backend:
     type: "qiskit_ibm"
     device: "ibm_fez"
     wires: 4
   evidence:
-    Dist1: 4
-    Bear1: 5
-    Dist2: 0
-    Bear2: 6
+    Dist1: 8
+    Bear1: 11
+    Dist2: 1
+    Bear2: 12
   query:
     - "X"
     - "Y"

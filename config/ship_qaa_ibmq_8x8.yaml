@@ -14,8 +14,8 @@ network:
     lighthouses:
       - [1, 3]
       - [6, 7]
-    num_dist_bins: 8
-    num_bear_bins: 8
+    num_dist_bins: 4
+    num_bear_bins: 4
     dist_noise: [0.95, 0.03, 0.01, 0.01]
     bear_noise: [0.95, 0.03, 0.01, 0.01]
 
@@ -34,9 +34,9 @@ inference:
     device: "ibm_fez"
     wires: 4
   evidence:
-    Dist1: 4
-    Bear1: 5
-    Dist2: 1
+    Dist1: 2
+    Bear1: 2
+    Dist2: 0
     Bear2: 0
   query:
     - "X"
