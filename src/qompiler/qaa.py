@@ -75,10 +75,17 @@ class QAAQompiler(QompilerBase):
             # Pre-conditioned mode: compute P(query | evidence) classically from
             # the CPD tables and encode it as amplitudes on the query qubits only.
             # No evidence qubits are allocated, eliminating post-selection entirely.
+            #
+            # Binary encoding is always used here regardless of the requested encoding.
+            # One-hot would allocate card_X + card_Y qubits and require a 2^(sum)
+            # amplitude vector locally — infeasible for large cardinalities and wasteful
+            # on hardware. The preconditioned mode has no oracle or diffuser, so the
+            # encoding convention carries no advantage over binary.
+            _bin_map = build_wires_map(model, encoding="binary")
             q_map: Dict[str, List[int]] = {}
             w = 0
             for node in query:
-                bits = len(full_wires_map[node])
+                bits = len(_bin_map[node])
                 q_map[node] = list(range(w, w + bits))
                 w += bits
             num_wires = w
