@@ -21,13 +21,13 @@ network:
 
 inference:
   compiler: "QAA"
-  encoding: "binary"
+  encoding: "one_hot"
   baseline:
     enabled: true
     method: "variable_elimination"
     params: {}
   circuit:
-    shots: 16384
+    shots: 4096
     seed: 123
   backend:
     type: "qiskit_ibm"
