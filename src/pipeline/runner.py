@@ -16,6 +16,12 @@ from src.metrics.plots import (
     compute_prob_history_from_samples,
     save_probability_evolution_plot,
 )
+from src.metrics.markdown_report import (
+    collect_network_stats,
+    collect_system_info,
+    compute_distribution_metrics,
+    write_markdown_report,
+)
 from src.metrics.tracker import save_metrics
 from src.metrics import wandb_logger
 from src.network_builder import get_network_builder
@@ -263,8 +269,20 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         "quantum_distribution": quantum_distribution,
     }
 
+    shots_requested = config.inference.circuit.shots
+    effective_samples = matched_shots if matched_shots is not None else shots_requested
+    evidence_match_rate = (effective_samples / shots_requested) if shots_requested else None
+    shots_per_effective = (shots_requested / effective_samples) if effective_samples else None
+
+    accuracy_metrics = compute_distribution_metrics(baseline_distribution, quantum_distribution)
+    if baseline_time is not None and run_time > 0:
+        accuracy_metrics["speedup"] = baseline_time / run_time
+    else:
+        accuracy_metrics["speedup"] = None
+
     metrics_payload = {
         "experiment": config.name,
+        "timestamp": timestamp,
         "compiler": circuit_spec.name,
         "backend": config.inference.backend.type,
         "baseline_enabled": config.inference.baseline.enabled,
@@ -281,11 +299,47 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
         "result": run_result,
         "circuit_metadata": circuit_spec.metadata,
         "circuit_stats": run_result.get("circuit_stats"),
+        "transpiled_stats": run_result.get("transpiled_stats"),
         "circuit_image": run_result.get("circuit_image"),
+        "config": {
+            "compiler": config.inference.compiler,
+            "encoding": config.inference.encoding,
+            "backend_type": config.inference.backend.type,
+            "device": config.inference.backend.device,
+            "shots": shots_requested,
+            "circuit_seed": config.inference.circuit.seed,
+            "network_seed": config.network.seed,
+            "evidence": config.inference.evidence,
+            "query": config.inference.query,
+            "baseline_enabled": config.inference.baseline.enabled,
+            "baseline_method": config.inference.baseline.method,
+        },
+        "network_stats": collect_network_stats(network),
+        "execution": {
+            "shots_requested": shots_requested,
+            "effective_samples": effective_samples,
+            "evidence_match_rate": evidence_match_rate,
+            "shots_per_effective_sample": shots_per_effective,
+        },
+        "accuracy": accuracy_metrics,
+        "system": collect_system_info(),
+        "artifacts": {
+            "config_snapshot": f"{output_dir}/config_snapshot.yaml",
+            "metrics_json": f"{output_dir}/metrics.json",
+            "result_json": f"{output_dir}/result.json",
+            "probs_plot": plot_path,
+            "prob_evolution_plot": evolution_path,
+            "network_image": network_image_path,
+            "cpd_markdown": cpd_md_path,
+            "circuit_image": run_result.get("circuit_image"),
+            "raw_samples": f"{output_dir}/raw_samples.json" if hist else None,
+        },
     }
 
     save_metrics(output_dir, metrics_payload)
     write_json(f"{output_dir}/result.json", result_payload)
+    report_path = write_markdown_report(output_dir, metrics_payload)
+    metrics_payload["report"] = report_path
 
     wandb_logger.finish()
     return metrics_payload

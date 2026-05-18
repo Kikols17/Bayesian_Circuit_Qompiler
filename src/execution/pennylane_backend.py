@@ -96,13 +96,42 @@ def run_pennylane(
         tape = getattr(qnode, "tape")
 
     operations = list(tape.operations) if tape is not None else []
+    measurements = list(getattr(tape, "measurements", []) or []) if tape is not None else []
+
+    operation_counts: Dict[str, int] = {}
+    for op in operations:
+        operation_counts[op.name] = operation_counts.get(op.name, 0) + 1
+
+    depth = None
+    gate_sizes: Dict[int, int] = {}
+    num_parameters = None
+    if tape is not None:
+        try:
+            resources = tape.specs.get("resources")
+            if resources is not None:
+                depth = int(resources.depth)
+                gate_sizes = {int(k): int(v) for k, v in dict(resources.gate_sizes).items()}
+        except Exception:
+            depth = None
+        try:
+            num_parameters = int(tape.num_params)
+        except Exception:
+            num_parameters = None
+
+    if not gate_sizes:
+        for op in operations:
+            arity = len(getattr(op, "wires", []) or [])
+            if arity:
+                gate_sizes[arity] = gate_sizes.get(arity, 0) + 1
+
     circuit_stats = {
         "num_wires": num_wires,
         "num_operations": len(operations),
-        "operation_counts": {
-            op.name: sum(1 for o in operations if o.name == op.name)
-            for op in operations
-        },
+        "operation_counts": operation_counts,
+        "depth": depth,
+        "gate_sizes": gate_sizes,
+        "num_parameters": num_parameters,
+        "num_measurements": len(measurements),
     }
 
     circuit_image = None

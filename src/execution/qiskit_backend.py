@@ -559,12 +559,28 @@ def run_qiskit(
 
     circuit = circuit.copy()
 
+    def _qiskit_gate_sizes(qc) -> Dict[int, int]:
+        sizes: Dict[int, int] = {}
+        for instr in qc.data:
+            arity = len(instr.qubits)
+            if arity:
+                sizes[arity] = sizes.get(arity, 0) + 1
+        return sizes
+
+    def _qiskit_num_measurements(qc) -> int:
+        return sum(1 for instr in qc.data if instr.operation.name == "measure")
+
     circuit_stats = {
         "num_wires": circuit.num_qubits,
         "num_clbits": circuit.num_clbits,
         "num_operations": sum(circuit.count_ops().values()),
         "operation_counts": dict(circuit.count_ops()),
+        "depth": int(circuit.depth()),
+        "gate_sizes": _qiskit_gate_sizes(circuit),
+        "num_parameters": int(circuit.num_parameters),
+        "num_measurements": _qiskit_num_measurements(circuit),
     }
+    transpiled_stats: Optional[Dict[str, Any]] = None
     circuit_image = None
     if save_circuit_image:
         circuit_image = save_qiskit_circuit_image(output_dir, circuit)
@@ -592,6 +608,18 @@ def run_qiskit(
         pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
         isa_circuit = pm.run(circuit)
         print(f"Transpiled: {isa_circuit.num_qubits} qubits, {sum(isa_circuit.count_ops().values())} gates")
+        try:
+            basis_gates = list(getattr(backend, "operation_names", None) or getattr(backend, "basis_gates", []) or [])
+        except Exception:
+            basis_gates = []
+        transpiled_stats = {
+            "num_wires": isa_circuit.num_qubits,
+            "num_operations": sum(isa_circuit.count_ops().values()),
+            "operation_counts": dict(isa_circuit.count_ops()),
+            "depth": int(isa_circuit.depth()),
+            "gate_sizes": _qiskit_gate_sizes(isa_circuit),
+            "basis_gates": basis_gates,
+        }
 
         try:
             from qiskit_ibm_runtime.options import SamplerOptions
@@ -655,5 +683,6 @@ def run_qiskit(
         "raw": raw_array,
         "backend": backend_name,
         "circuit_stats": circuit_stats,
+        "transpiled_stats": transpiled_stats,
         "circuit_image": circuit_image,
     }
