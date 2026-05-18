@@ -17,7 +17,7 @@ def save_qiskit_circuit_image(
 ) -> str:
     ensure_dir(output_dir)
     try:
-        fig = circuit.draw(output="mpl", fold=100)
+        fig = circuit.decompose().draw(output="mpl", fold=100)
         path = f"{output_dir}/{filename}"
         fig.savefig(path, dpi=180, bbox_inches="tight")
         plt.close(fig)
