@@ -9,8 +9,14 @@ from typing import Any, Dict, List
 import numpy as np
 
 from src.config.loader import load_config
+from src.execution.navigator_backend import (
+    NAVIGATOR_REQUIRED_ENV,
+    NavigatorJobDetached,
+    run_navigator,
+)
 from src.execution.pennylane_backend import run_pennylane
 from src.execution.qiskit_backend import run_qiskit
+from src.utils.env_validation import require_env
 from src.metrics.plots import (
     save_probabilities_plot,
     compute_prob_history_from_samples,
@@ -41,13 +47,20 @@ def _load_env() -> None:
         return
 
 
-def run_pipeline(config_path: str) -> Dict[str, Any]:
+def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, Any]:
     _load_env()
     config = load_config(config_path)
+
+    if config.inference.backend.type.startswith("navigator"):
+        require_env(NAVIGATOR_REQUIRED_ENV)
+
     wandb_logger.init_run(config)
     output_base = Path(config.output_dir)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = str(output_base.parent / f"{timestamp}_{output_base.name}")
+    if resume_from:
+        output_dir = resume_from
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = str(output_base.parent / f"{timestamp}_{output_base.name}")
     ensure_dir(output_dir)
 
     write_yaml(f"{output_dir}/config_snapshot.yaml", {
@@ -145,6 +158,40 @@ def run_pipeline(config_path: str) -> Dict[str, Any]:
             query=config.inference.query,
             save_circuit_image=config.output.save_circuit_image,
         )
+    elif config.inference.backend.type.startswith("navigator"):
+        try:
+            run_result = run_navigator(
+                output_dir=output_dir,
+                spec=circuit_spec,
+                circuit_config=config.inference.circuit,
+                backend_config=config.inference.backend,
+                evidence=config.inference.evidence,
+                query=config.inference.query,
+                save_circuit_image=config.output.save_circuit_image,
+                network=network,
+                compiler=config.inference.compiler,
+                encoding=config.inference.encoding,
+            )
+        except NavigatorJobDetached as detached:
+            pending = {
+                "status": "pending",
+                "tag": detached.tag,
+                "jobid": detached.jobid,
+                "remote_dir": detached.remote_dir,
+                "output_dir": output_dir,
+                "config": config_path,
+                "checkpoint": detached.checkpoint_path,
+                "resume_command": (
+                    f"python run_pipeline.py --config {config_path} --resume {output_dir}"
+                ),
+            }
+            write_json(f"{output_dir}/pending.json", pending)
+            wandb_logger.finish()
+            print(
+                f"[navigator] job {detached.jobid} submitted (tag={detached.tag!r}); "
+                f"resume with: {pending['resume_command']}"
+            )
+            return pending
     else:
         raise ValueError(f"Unsupported backend: {config.inference.backend.type}")
     run_time = time.perf_counter() - run_start

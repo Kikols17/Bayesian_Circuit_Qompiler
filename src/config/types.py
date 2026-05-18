@@ -28,6 +28,7 @@ class BackendConfig:
     type: str
     device: Optional[str] = None
     wires: Optional[int] = None
+    params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

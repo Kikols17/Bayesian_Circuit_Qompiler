@@ -48,6 +48,7 @@ def load_config(path: str) -> ExperimentConfig:
         type=_get_required(backend_raw, "type"),
         device=backend_raw.get("device"),
         wires=backend_raw.get("wires"),
+        params=backend_raw.get("params") or {},
     )
 
     output_raw = exp_raw.get("output", {})

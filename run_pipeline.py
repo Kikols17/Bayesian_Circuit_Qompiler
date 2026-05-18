@@ -12,9 +12,17 @@ def main() -> None:
         default="config.yaml",
         help="Path to experiment config YAML",
     )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help=(
+            "Resume a previously detached navigator run by pointing at its output "
+            "directory (must contain navigator_checkpoint.json)."
+        ),
+    )
     args = parser.parse_args()
 
-    run_pipeline(args.config)
+    run_pipeline(args.config, resume_from=args.resume)
 
 
 if __name__ == "__main__":
