@@ -47,6 +47,47 @@ def _load_env() -> None:
         return
 
 
+def _marginalize_baseline_distribution(
+    baseline_result: Dict[str, Any],
+    original_query: List[str],
+    kept_query: List[str],
+) -> Dict[str, Any]:
+    """Sum out non-kept variables from a baseline distribution.
+
+    Distribution keys are formatted by VariableEliminationBaseline as
+    'X=3,Y=12' for multi-variable queries or '3' for single-variable queries.
+    """
+    distribution = baseline_result.get("distribution")
+    if not isinstance(distribution, dict):
+        return baseline_result
+
+    marginal: Dict[str, float] = {}
+    for key, prob in distribution.items():
+        parts = key.split(",") if "," in key else [key]
+        if len(parts) == len(original_query):
+            coords = {}
+            for part, var in zip(parts, original_query):
+                if "=" in part:
+                    var_name, value = part.split("=", 1)
+                    coords[var_name] = value
+                else:
+                    coords[var] = part
+        else:
+            coords = {original_query[0]: parts[0]}
+
+        if len(kept_query) == 1:
+            new_key = coords[kept_query[0]]
+        else:
+            new_key = ",".join(f"{v}={coords[v]}" for v in kept_query)
+        marginal[new_key] = marginal.get(new_key, 0.0) + float(prob)
+
+    new_result = dict(baseline_result)
+    new_result["distribution"] = marginal
+    new_result["query"] = list(kept_query)
+    new_result["marginalized_from"] = list(original_query)
+    return new_result
+
+
 def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, Any]:
     _load_env()
     config = load_config(config_path)
@@ -81,6 +122,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             "inference": {
                 "compiler": config.inference.compiler,
                 "encoding": config.inference.encoding,
+                "encoding_params": config.inference.encoding_params,
                 "baseline": {
                     "enabled": config.inference.baseline.enabled,
                     "method": config.inference.baseline.method,
@@ -136,8 +178,16 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
         config.inference.evidence,
         config.inference.query,
         encoding=config.inference.encoding,
+        encoding_params=config.inference.encoding_params,
     )
     compile_time = time.perf_counter() - compile_start
+
+    effective_query = circuit_spec.metadata.get("effective_query") or config.inference.query
+    if baseline_result is not None and effective_query != config.inference.query:
+        baseline_result = _marginalize_baseline_distribution(
+            baseline_result, config.inference.query, effective_query
+        )
+        write_json(f"{output_dir}/baseline_result.json", baseline_result)
     wandb_logger.log_compile_metrics(circuit_spec, compile_time)
 
     run_start = time.perf_counter()
@@ -148,7 +198,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             circuit_config=config.inference.circuit,
             backend_config=config.inference.backend,
             evidence=config.inference.evidence,
-            query=config.inference.query,
+            query=effective_query,
             save_circuit_image=config.output.save_circuit_image,
         )
     elif config.inference.backend.type.startswith("qiskit"):
@@ -158,7 +208,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             circuit_config=config.inference.circuit,
             backend_config=config.inference.backend,
             evidence=config.inference.evidence,
-            query=config.inference.query,
+            query=effective_query,
             save_circuit_image=config.output.save_circuit_image,
         )
     elif config.inference.backend.type.startswith("navigator"):
@@ -169,11 +219,12 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
                 circuit_config=config.inference.circuit,
                 backend_config=config.inference.backend,
                 evidence=config.inference.evidence,
-                query=config.inference.query,
+                query=effective_query,
                 save_circuit_image=config.output.save_circuit_image,
                 network=network,
                 compiler=config.inference.compiler,
                 encoding=config.inference.encoding,
+                encoding_params=config.inference.encoding_params,
             )
         except NavigatorJobDetached as detached:
             pending = {
@@ -209,7 +260,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             output_dir,
             run_result["probs"],
             title=f"{config.name} probabilities",
-            query=config.inference.query,
+            query=effective_query,
             wires_map=circuit_spec.wires_map,
             baseline_distribution=baseline_distribution,
         )
@@ -225,7 +276,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             # QAA pre-conditions evidence out of the circuit, so those nodes are absent from wires_map.
             measurable_evidence = {k: v for k, v in config.inference.evidence.items() if k in circuit_spec.wires_map}
             hist, matched_shots = compute_prob_history_from_samples(
-                raw_samples, circuit_spec.wires_map, config.inference.query, measurable_evidence
+                raw_samples, circuit_spec.wires_map, effective_query, measurable_evidence
             )
         except Exception as exc:
             print(f"[evolution] compute_prob_history_from_samples failed: {exc}")
@@ -238,7 +289,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
                 hist,
                 title=f"{config.name} probability evolution",
                 filename="prob_evolution_top10.png",
-                query=config.inference.query,
+                query=effective_query,
                 wires_map=circuit_spec.wires_map,
                 top_n=10,
             )
@@ -282,7 +333,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
     def _distribution_from_result(result: Dict[str, Any]) -> Dict[str, float] | None:
         probs = result.get("probs")
         if isinstance(probs, list):
-            return _format_quantum_distribution(probs, config.inference.query, circuit_spec.wires_map)
+            return _format_quantum_distribution(probs, effective_query, circuit_spec.wires_map)
         if isinstance(probs, dict):
             return {str(key): float(val) for key, val in probs.items()}
         return None
@@ -354,6 +405,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
         "config": {
             "compiler": config.inference.compiler,
             "encoding": config.inference.encoding,
+            "encoding_params": config.inference.encoding_params,
             "backend_type": config.inference.backend.type,
             "device": config.inference.backend.device,
             "shots": shots_requested,
@@ -361,6 +413,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             "network_seed": config.network.seed,
             "evidence": config.inference.evidence,
             "query": config.inference.query,
+            "effective_query": effective_query,
             "baseline_enabled": config.inference.baseline.enabled,
             "baseline_method": config.inference.baseline.method,
         },

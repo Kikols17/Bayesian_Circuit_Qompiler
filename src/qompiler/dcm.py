@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import numpy as np
 import pennylane as qml
@@ -17,13 +17,28 @@ class DCMQompiler(QompilerBase):
         model: DiscreteBayesianNetwork,
         evidence: Dict[str, int],
         query: List[str],
-        encoding: str = "binary",
+        encoding: str,
+        encoding_params: Dict[str, Any],
     ) -> CircuitSpec:
+        if encoding == "sparse_topk":
+            raise ValueError(
+                "DCM does not support encoding='sparse_topk'. DCM applies per-CPD "
+                "encoding to construct the full joint, with no single global "
+                "amplitude vector to truncate. Use 'binary' or 'one_hot'."
+            )
+        if encoding not in ("binary", "one_hot"):
+            raise ValueError(
+                f"DCM supports encoding 'binary' or 'one_hot', got {encoding!r}"
+            )
         wires_map = build_wires_map(model, encoding=encoding)
         num_wires = max(w for wires in wires_map.values() for w in wires) + 1
         query_wire_list = query_wires(wires_map, query)
         use_one_hot = encoding == "one_hot"
-        metadata: Dict[str, object] = {"query_wires": query_wire_list, "encoding": encoding}
+        metadata: Dict[str, object] = {
+            "query_wires": query_wire_list,
+            "encoding": encoding,
+            "encoding_params": dict(encoding_params),
+        }
 
         def _set_evidence_value(value: int, node_wires: List[int]) -> None:
             if use_one_hot:

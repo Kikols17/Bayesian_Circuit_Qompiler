@@ -43,8 +43,9 @@ class InferenceConfig:
     compiler: str
     circuit: CircuitConfig
     backend: BackendConfig
+    encoding: str
+    encoding_params: Dict[str, Any]
     baseline: BaselineConfig = field(default_factory=BaselineConfig)
-    encoding: str = "binary"
     evidence: Dict[str, int] = field(default_factory=dict)
     query: List[str] = field(default_factory=list)
 

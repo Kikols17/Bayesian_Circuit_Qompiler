@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from itertools import product as iproduct
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pennylane as qml
@@ -59,6 +59,69 @@ def _build_conditional_probs(
     return [p / total for p in unnorm]
 
 
+def _binary_qubit_count(card: int) -> int:
+    return max(1, int(math.ceil(math.log2(card))))
+
+
+def _marginalize_out(
+    probs: List[float],
+    query: List[str],
+    query_cards: List[int],
+    marginalize: List[str],
+) -> Tuple[List[float], List[str], List[int]]:
+    """Sum out marginalised variables from a row-major flat distribution.
+
+    Returns (reduced_probs, kept_query, kept_cards) where the reduced_probs
+    layout matches kept_query in the same MSB-first row-major order as the
+    binary index built in `_build_conditional_probs`.
+    """
+    if not marginalize:
+        return probs, query, query_cards
+
+    kept = [v for v in query if v not in marginalize]
+    kept_cards = [query_cards[query.index(v)] for v in kept]
+    kept_size = 1
+    for c in kept_cards:
+        kept_size *= c
+
+    reduced = [0.0] * kept_size
+    for flat_idx, p in enumerate(probs):
+        coords: List[int] = []
+        rem = flat_idx
+        for c in reversed(query_cards):
+            coords.insert(0, rem % c)
+            rem //= c
+
+        kept_coords = [coords[query.index(v)] for v in kept]
+        kept_flat = 0
+        for v, c in zip(kept_coords, kept_cards):
+            kept_flat = kept_flat * c + v
+        reduced[kept_flat] += p
+
+    return reduced, kept, kept_cards
+
+
+def _binary_index_to_padded_index(
+    binary_idx: int, kept_cards: List[int], padded_bits_per_var: List[int]
+) -> int:
+    """Map a row-major index over kept_cards to the row-major qubit-padded index.
+
+    Each kept variable occupies ceil(log2(card)) qubits. The padded index is the
+    integer whose binary representation is the concatenation of each variable's
+    binary value, in query order, MSB-first.
+    """
+    coords: List[int] = []
+    rem = binary_idx
+    for c in reversed(kept_cards):
+        coords.insert(0, rem % c)
+        rem //= c
+
+    padded = 0
+    for value, bits in zip(coords, padded_bits_per_var):
+        padded = (padded << bits) | value
+    return padded
+
+
 class QAAQompiler(QompilerBase):
     name = "QAA"
 
@@ -67,44 +130,121 @@ class QAAQompiler(QompilerBase):
         model: DiscreteBayesianNetwork,
         evidence: Dict[str, int],
         query: List[str],
-        encoding: str = "binary",
+        encoding: str,
+        encoding_params: Dict[str, Any],
     ) -> CircuitSpec:
         full_wires_map = build_wires_map(model, encoding=encoding)
 
         if evidence:
-            # Pre-conditioned mode: compute P(query | evidence) classically from
-            # the CPD tables and encode it as amplitudes on the query qubits only.
-            # No evidence qubits are allocated, eliminating post-selection entirely.
+            # Pre-conditioned mode: compute P(query | evidence) classically and
+            # encode it as amplitudes on the query qubits only. No evidence qubits
+            # are allocated.
             #
-            # Binary encoding is always used here regardless of the requested encoding.
-            # One-hot would allocate card_X + card_Y qubits and require a 2^(sum)
-            # amplitude vector locally — infeasible for large cardinalities and wasteful
-            # on hardware. The preconditioned mode has no oracle or diffuser, so the
-            # encoding convention carries no advantage over binary.
+            # Binary qubit layout is used regardless of which amplitude-encoding
+            # variant the user requested. The encoding flag controls *how* the
+            # amplitude vector is prepared (dense StatePreparation vs. sparse
+            # tree-walk SP), not the qubit-to-state mapping. One-hot would
+            # allocate sum(card) qubits and require a 2^sum-sized amplitude
+            # vector — infeasible.
+            if encoding == "one_hot":
+                raise ValueError(
+                    "QAA preconditioned mode does not support encoding='one_hot' "
+                    "(would allocate sum(card) qubits with a 2^sum amplitude vector; "
+                    "infeasible at scale). Use 'binary' or 'sparse_topk' instead."
+                )
+
+            query_cards = [int(model.get_cpds(node).variable_card) for node in query]
+
+            if encoding == "sparse_topk":
+                k = int(encoding_params["k"])
+                marginalize = list(encoding_params["marginalize"])
+            elif encoding == "binary":
+                k = None
+                marginalize = []
+            else:
+                raise ValueError(
+                    f"QAA preconditioned mode does not support encoding={encoding!r}"
+                )
+
+            cond_probs = _build_conditional_probs(model, evidence, query)
+            cond_probs, effective_query, effective_cards = _marginalize_out(
+                cond_probs, query, query_cards, marginalize
+            )
+
             _bin_map = build_wires_map(model, encoding="binary")
             q_map: Dict[str, List[int]] = {}
             w = 0
-            for node in query:
+            for node in effective_query:
                 bits = len(_bin_map[node])
                 q_map[node] = list(range(w, w + bits))
                 w += bits
             num_wires = w
-            query_wire_list = [wire for node in query for wire in q_map[node]]
-            cond_probs = _build_conditional_probs(model, evidence, query)
-            metadata: Dict[str, object] = {
+            query_wire_list = [wire for node in effective_query for wire in q_map[node]]
+            padded_bits_per_var = [len(_bin_map[node]) for node in effective_query]
+
+            padded_size = 2 ** num_wires
+            padded_probs = [0.0] * padded_size
+            for binary_idx, p in enumerate(cond_probs):
+                padded_idx = _binary_index_to_padded_index(
+                    binary_idx, effective_cards, padded_bits_per_var
+                )
+                padded_probs[padded_idx] = p
+
+            metadata: Dict[str, Any] = {
                 "query_wires": query_wire_list,
                 "encoding": encoding,
+                "encoding_params": dict(encoding_params),
                 "mode": "preconditioned",
+                "effective_query": effective_query,
+                "marginalized": marginalize,
             }
 
-            def circuit_fn(
-                wires: Dict[str, List[int]],
-                evidence_map: Dict[str, int],
-                query_nodes: List[str],
-            ):
-                amps = [p ** 0.5 for p in cond_probs]
-                qml.AmplitudeEmbedding(amps, wires=query_wire_list, normalize=True)
-                return qml.probs(wires=query_wire_list)
+            if encoding == "sparse_topk":
+                indexed = sorted(
+                    enumerate(padded_probs), key=lambda t: t[1], reverse=True
+                )
+                top = indexed[:k]
+                top = [(idx, p) for idx, p in top if p > 0.0]
+                if not top:
+                    raise ValueError(
+                        "sparse_topk truncation produced an empty support set; "
+                        "the conditional posterior is identically zero."
+                    )
+                total = sum(p for _, p in top)
+                indices = [idx for idx, _ in top]
+                amps = [math.sqrt(p / total) for _, p in top]
+
+                metadata["sparse_state"] = {
+                    "indices": indices,
+                    "amps": amps,
+                    "num_qubits": num_wires,
+                    "k_requested": k,
+                    "k_effective": len(top),
+                    "truncated_mass": float(total),
+                }
+
+                truncated_padded = [0.0] * padded_size
+                for idx, p in top:
+                    truncated_padded[idx] = p / total
+
+                def circuit_fn(
+                    wires: Dict[str, List[int]],
+                    evidence_map: Dict[str, int],
+                    query_nodes: List[str],
+                ):
+                    amps_pl = [math.sqrt(p) for p in truncated_padded]
+                    qml.AmplitudeEmbedding(amps_pl, wires=query_wire_list, normalize=True)
+                    return qml.probs(wires=query_wire_list)
+
+            else:
+                def circuit_fn(
+                    wires: Dict[str, List[int]],
+                    evidence_map: Dict[str, int],
+                    query_nodes: List[str],
+                ):
+                    amps_pl = [math.sqrt(p) for p in padded_probs]
+                    qml.AmplitudeEmbedding(amps_pl, wires=query_wire_list, normalize=True)
+                    return qml.probs(wires=query_wire_list)
 
             return CircuitSpec(
                 name=self.name,
@@ -114,17 +254,24 @@ class QAAQompiler(QompilerBase):
                 metadata=metadata,
             )
 
+        if encoding == "sparse_topk":
+            raise ValueError(
+                "QAA oracle mode (no evidence) does not support encoding='sparse_topk'. "
+                "Sparse top-k truncation only applies to the preconditioned posterior. "
+                "Use 'binary' or 'one_hot' for oracle mode."
+            )
+
         # Oracle mode (no evidence): prepare full joint state + Grover iterations.
         wires_map = full_wires_map
         num_wires = max(w for ws in wires_map.values() for w in ws) + 1
         query_wire_list = query_wires(wires_map, query)
         use_one_hot = encoding == "one_hot"
-        # Fix 4: optimal Grover iteration count — assumes O(1) marked states.
         num_iterations = max(1, round(math.pi / 4 * math.sqrt(2 ** num_wires)))
         metadata = {
             "query_wires": query_wire_list,
             "num_iterations": num_iterations,
             "encoding": encoding,
+            "encoding_params": dict(encoding_params),
             "mode": "oracle",
         }
 

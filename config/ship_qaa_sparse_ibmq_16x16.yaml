@@ -1,7 +1,7 @@
-#pos = 15, 25
+#pos = 3, 14
 experiment:
-  name: "ship_localization_qaa_ibmq_32x32"
-  output_dir: "outputs/ship_localization_qaa_ibmq_32x32"
+  name: "ship_localization_qaa_ibmq_16x16_sparse"
+  output_dir: "outputs/ship_localization_qaa_ibmq_16x16_sparse"
   output:
     save_cpd_md: true
     save_circuit_image: true
@@ -11,19 +11,21 @@ network:
   save_image: true
   type: "ship_localization"
   params:
-    grid_size: 32
+    grid_size: 16
     lighthouses:
-      - [30, 5]
-      - [17, 25]
-    num_dist_bins: 32
-    num_bear_bins: 32
+      - [1, 5]
+      - [3, 12]
+    num_dist_bins: 16
+    num_bear_bins: 16
     dist_noise: [0.95, 0.03, 0.01, 0.01]
     bear_noise: [0.95, 0.03, 0.01, 0.01]
 
 inference:
   compiler: "QAA"
-  encoding: "binary"
-  encoding_params: {}
+  encoding: "sparse_topk"
+  encoding_params:
+    k: 16
+    marginalize: []
   baseline:
     enabled: true
     method: "variable_elimination"
@@ -33,13 +35,13 @@ inference:
     seed: 123
   backend:
     type: "qiskit_ibm"
-    device: "ibm_fez"
-    wires: 4
+    device: "noisy:ibm_fez"
+    wires: 8
   evidence:
-    Dist1: 20
-    Bear1: 27
-    Dist2: 2
-    Bear2: 0
+    Dist1: 8
+    Bear1: 11
+    Dist2: 1
+    Bear2: 12
   query:
     - "X"
     - "Y"

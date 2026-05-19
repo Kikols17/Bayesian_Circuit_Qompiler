@@ -24,6 +24,7 @@ network:
 inference:
   compiler: "DCM"
   encoding: "binary"
+  encoding_params: {}
   baseline:
     enabled: true
     method: "variable_elimination"

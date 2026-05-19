@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import yaml
 
@@ -14,11 +14,70 @@ from .types import (
     OutputConfig,
 )
 
+_SUPPORTED_ENCODINGS = ("binary", "one_hot", "sparse_topk")
+_SPARSE_TOPK_REQUIRED_KEYS = ("k", "marginalize")
+
 
 def _get_required(data: Dict[str, Any], key: str) -> Any:
     if key not in data:
         raise ValueError(f"Missing required config key: {key}")
     return data[key]
+
+
+def _validate_encoding_params(
+    encoding: str, params: Dict[str, Any], query: List[str]
+) -> None:
+    if encoding not in _SUPPORTED_ENCODINGS:
+        raise ValueError(
+            f"inference.encoding={encoding!r} is not supported. "
+            f"Supported values: {list(_SUPPORTED_ENCODINGS)}"
+        )
+
+    if encoding in ("binary", "one_hot"):
+        if params:
+            raise ValueError(
+                f"inference.encoding={encoding!r} accepts no parameters; "
+                f"got encoding_params={params!r}. Use 'encoding_params: {{}}' explicitly."
+            )
+        return
+
+    missing = [k for k in _SPARSE_TOPK_REQUIRED_KEYS if k not in params]
+    if missing:
+        raise ValueError(
+            "inference.encoding='sparse_topk' requires the following encoding_params "
+            f"keys, but they are missing: {missing}. "
+            "Required schema: {k: <positive int>, marginalize: <list of query names>}."
+        )
+    extra = [k for k in params if k not in _SPARSE_TOPK_REQUIRED_KEYS]
+    if extra:
+        raise ValueError(
+            f"inference.encoding='sparse_topk' got unknown encoding_params keys: {extra}. "
+            f"Allowed keys: {list(_SPARSE_TOPK_REQUIRED_KEYS)}."
+        )
+
+    k = params["k"]
+    if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
+        raise ValueError(
+            f"inference.encoding_params.k must be a positive integer, got {k!r}"
+        )
+
+    marginalize = params["marginalize"]
+    if not isinstance(marginalize, list) or not all(isinstance(m, str) for m in marginalize):
+        raise ValueError(
+            "inference.encoding_params.marginalize must be a list of strings "
+            f"(query variable names to marginalize), got {marginalize!r}"
+        )
+    unknown = [m for m in marginalize if m not in query]
+    if unknown:
+        raise ValueError(
+            f"inference.encoding_params.marginalize references variables not in query: "
+            f"{unknown}. query={query}"
+        )
+    if marginalize and len(marginalize) >= len(query):
+        raise ValueError(
+            "inference.encoding_params.marginalize cannot remove every query variable; "
+            f"got marginalize={marginalize} for query={query}"
+        )
 
 
 def load_config(path: str) -> ExperimentConfig:
@@ -64,12 +123,35 @@ def load_config(path: str) -> ExperimentConfig:
         params=baseline_raw.get("params", {}),
     )
 
+    encoding = _get_required(inference_raw, "encoding")
+    if not isinstance(encoding, str) or not encoding:
+        raise ValueError(
+            "inference.encoding must be a non-empty string "
+            "(one of: 'binary', 'one_hot', 'sparse_topk')"
+        )
+
+    if "encoding_params" not in inference_raw:
+        raise ValueError(
+            "inference.encoding_params is required (use '{}' if the chosen "
+            "encoding takes no parameters; sparse_topk requires k and marginalize)"
+        )
+    encoding_params = inference_raw["encoding_params"]
+    if encoding_params is None:
+        encoding_params = {}
+    if not isinstance(encoding_params, dict):
+        raise ValueError(
+            f"inference.encoding_params must be a mapping, got {type(encoding_params).__name__}"
+        )
+
+    _validate_encoding_params(encoding, encoding_params, inference_raw.get("query", []))
+
     inference = InferenceConfig(
         compiler=_get_required(inference_raw, "compiler"),
         circuit=circuit,
         backend=backend,
         baseline=baseline,
-        encoding=inference_raw.get("encoding", "binary"),
+        encoding=encoding,
+        encoding_params=encoding_params,
         evidence=inference_raw.get("evidence", {}),
         query=inference_raw.get("query", []),
     )

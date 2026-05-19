@@ -18,6 +18,7 @@ network:
 inference:
   compiler: "DCM"
   encoding: "one_hot"
+  encoding_params: {}
   circuit:
     shots: 512
     seed: 123

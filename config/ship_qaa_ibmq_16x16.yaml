@@ -1,3 +1,4 @@
+#pos = 3, 14
 experiment:
   name: "ship_localization_qaa_ibmq_16x16"
   output_dir: "outputs/ship_localization_qaa_ibmq_16x16"
@@ -21,7 +22,8 @@ network:
 
 inference:
   compiler: "QAA"
-  encoding: "one_hot"
+  encoding: "binary"
+  encoding_params: {}
   baseline:
     enabled: true
     method: "variable_elimination"

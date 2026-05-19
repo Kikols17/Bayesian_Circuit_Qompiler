@@ -83,8 +83,13 @@ def run_navigator(
     save_circuit_image: bool = False,
     network: Optional[DiscreteBayesianNetwork] = None,
     compiler: Optional[str] = None,
-    encoding: str = "binary",
+    encoding: Optional[str] = None,
+    encoding_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if encoding is None:
+        raise ValueError("run_navigator requires an explicit 'encoding' argument")
+    if encoding_params is None:
+        raise ValueError("run_navigator requires an explicit 'encoding_params' argument")
     env = require_env(NAVIGATOR_REQUIRED_ENV)
     user = env["NAVIGATOR_USER"]
     ssh_key = os.path.abspath(os.path.expanduser(env["NAVIGATOR_SSH_KEY"]))
@@ -173,6 +178,7 @@ def run_navigator(
     payload = {
         "compiler": compiler,
         "encoding": encoding,
+        "encoding_params": dict(encoding_params),
         "network": network,
         "evidence": dict(evidence),
         "query": list(query),
@@ -596,6 +602,7 @@ def main() -> int:
             payload["evidence"],
             payload["query"],
             encoding=payload["encoding"],
+            encoding_params=payload["encoding_params"],
         )
 
         circuit_cfg = CircuitConfig(
