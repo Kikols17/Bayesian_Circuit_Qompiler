@@ -63,40 +63,43 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
         output_dir = str(output_base.parent / f"{timestamp}_{output_base.name}")
     ensure_dir(output_dir)
 
-    write_yaml(f"{output_dir}/config_snapshot.yaml", {
-        "experiment": {
-            "name": config.name,
-            "requested_output_dir": config.output_dir,
-            "output_dir": output_dir,
-        },
-        "network": {
-            "builder": config.network.builder,
-            "save_image": config.network.save_image,
-            "seed": config.network.seed,
-            "type": config.network.type,
-            "params": config.network.params,
-        },
-        "inference": {
-            "compiler": config.inference.compiler,
-            "encoding": config.inference.encoding,
-            "baseline": {
-                "enabled": config.inference.baseline.enabled,
-                "method": config.inference.baseline.method,
-                "params": config.inference.baseline.params,
+    snapshot_path = f"{output_dir}/config_snapshot.yaml"
+    if not (resume_from and Path(snapshot_path).exists()):
+        write_yaml(snapshot_path, {
+            "experiment": {
+                "name": config.name,
+                "requested_output_dir": config.output_dir,
+                "output_dir": output_dir,
             },
-            "circuit": {
-                "shots": config.inference.circuit.shots,
-                "seed": config.inference.circuit.seed,
+            "network": {
+                "builder": config.network.builder,
+                "save_image": config.network.save_image,
+                "seed": config.network.seed,
+                "type": config.network.type,
+                "params": config.network.params,
             },
-            "backend": {
-                "type": config.inference.backend.type,
-                "device": config.inference.backend.device,
-                "wires": config.inference.backend.wires,
+            "inference": {
+                "compiler": config.inference.compiler,
+                "encoding": config.inference.encoding,
+                "baseline": {
+                    "enabled": config.inference.baseline.enabled,
+                    "method": config.inference.baseline.method,
+                    "params": config.inference.baseline.params,
+                },
+                "circuit": {
+                    "shots": config.inference.circuit.shots,
+                    "seed": config.inference.circuit.seed,
+                },
+                "backend": {
+                    "type": config.inference.backend.type,
+                    "device": config.inference.backend.device,
+                    "wires": config.inference.backend.wires,
+                    "params": config.inference.backend.params,
+                },
+                "evidence": config.inference.evidence,
+                "query": config.inference.query,
             },
-            "evidence": config.inference.evidence,
-            "query": config.inference.query,
-        },
-    })
+        })
 
     network_builder = get_network_builder(config.network.builder)
     network = network_builder.build(config.network)

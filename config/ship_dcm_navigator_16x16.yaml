@@ -1,0 +1,53 @@
+# Ship localization (DCM, binary) — 16x16 grid on Navigator.
+# Qubit estimate: ~24 (X+Y=8, 4 obs @ 16 bins => 16). State vector ~270 MB.
+experiment:
+  name: "ship_localization_dcm_navigator_16x16"
+  output_dir: "outputs/ship_localization_dcm_navigator_16x16"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 16
+    lighthouses:
+      - [1, 5]
+      - [3, 12]
+    num_dist_bins: 16
+    num_bear_bins: 16
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+
+inference:
+  compiler: "DCM"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 4096
+    seed: 123
+  backend:
+    type: "navigator"
+    device: null
+    wires: null
+    params:
+      engine: "pennylane"
+      partition: "hpc"
+      time_limit: "02:00:00"
+      cpus: 16
+      mem: "16G"
+      nodes: 1
+      poll_interval_s: 30
+  evidence:
+    Dist1: 8
+    Bear1: 11
+    Dist2: 1
+    Bear2: 12
+  query:
+    - "X"
+    - "Y"

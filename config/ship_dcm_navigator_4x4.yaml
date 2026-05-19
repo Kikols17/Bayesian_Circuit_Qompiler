@@ -1,0 +1,53 @@
+# Ship localization (DCM, binary) — 4x4 grid on Navigator.
+# Qubit estimate: ~12 (X+Y=4, 2 dist + 2 bear @ 4 bins => 8). Trivially simulable.
+experiment:
+  name: "ship_localization_dcm_navigator_4x4"
+  output_dir: "outputs/ship_localization_dcm_navigator_4x4"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 4
+    lighthouses:
+      - [1, 1]
+      - [3, 2]
+    num_dist_bins: 4
+    num_bear_bins: 4
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+
+inference:
+  compiler: "DCM"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 4096
+    seed: 123
+  backend:
+    type: "navigator"
+    device: null
+    wires: null
+    params:
+      engine: "pennylane"
+      partition: "hpc"
+      time_limit: "00:30:00"
+      cpus: 4
+      mem: "8G"
+      nodes: 1
+      poll_interval_s: 30
+  evidence:
+    Dist1: 2
+    Bear1: 3
+    Dist2: 3
+    Bear2: 1
+  query:
+    - "X"
+    - "Y"

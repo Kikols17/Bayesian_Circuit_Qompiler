@@ -1,0 +1,56 @@
+# Ship localization (DCM, binary) — 64x64 grid on Navigator.
+# Qubit estimate: ~28 (X+Y=12, 4 obs @ 16 bins => 16). State vector ~4 GB.
+# Needs a high-memory node — Navigator has 7 nodes with 384 GB and 1 SMP with 3 TB.
+# Verify your account has access to the partition before running.
+experiment:
+  name: "ship_localization_dcm_navigator_64x64"
+  output_dir: "outputs/ship_localization_dcm_navigator_64x64"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 64
+    lighthouses:
+      - [60, 4]
+      - [12, 54]
+    num_dist_bins: 64
+    num_bear_bins: 64
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+
+inference:
+  compiler: "DCM"
+  encoding: "binary"
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 4096
+    seed: 123
+  backend:
+    type: "navigator"
+    device: null
+    wires: null
+    params:
+      engine: "pennylane"
+      partition: "hpc"         # switch to a high-mem partition if your account requires it
+      time_limit: "12:00:00"
+      cpus: 20
+      mem: "192G"
+      nodes: 1
+      poll_interval_s: 60
+      # detach: true           # recommended for runs this long
+  evidence:
+    Dist1: 19
+    Bear1: 52
+    Dist2: 39
+    Bear2: 25
+  query:
+    - "X"
+    - "Y"
