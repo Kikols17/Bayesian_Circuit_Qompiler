@@ -20,9 +20,15 @@ def main() -> None:
             "directory (must contain navigator_checkpoint.json)."
         ),
     )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt before submitting to real hardware.",
+    )
     args = parser.parse_args()
 
-    run_pipeline(args.config, resume_from=args.resume)
+    run_pipeline(args.config, resume_from=args.resume, skip_confirmation=args.yes)
 
 
 if __name__ == "__main__":

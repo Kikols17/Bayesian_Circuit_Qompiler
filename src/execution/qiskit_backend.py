@@ -156,6 +156,7 @@ def run_qiskit(
     evidence: Dict[str, int],
     query: List[str],
     save_circuit_image: bool = False,
+    skip_confirmation: bool = False,
 ) -> Dict[str, Any]:
     """Compile and run the circuit using Qiskit/Aer or IBM backends.
 
@@ -600,9 +601,12 @@ def run_qiskit(
         print(f"  Shots        : {circuit_config.shots}")
         print(f"  Note: gate count will increase after transpilation")
         print(f"------------------------------------------------")
-        confirm = input("Submit to hardware? [y/N] ").strip().lower()
-        if confirm != "y":
-            raise RuntimeError("Hardware job cancelled by user.")
+        if skip_confirmation:
+            print("Submit to hardware? [y/N] y  (auto-confirmed via -y)")
+        else:
+            confirm = input("Submit to hardware? [y/N] ").strip().lower()
+            if confirm != "y":
+                raise RuntimeError("Hardware job cancelled by user.")
 
         print("Transpiling circuit for hardware...")
         pm = generate_preset_pass_manager(backend=backend, optimization_level=3)

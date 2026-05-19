@@ -88,7 +88,11 @@ def _marginalize_baseline_distribution(
     return new_result
 
 
-def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, Any]:
+def run_pipeline(
+    config_path: str,
+    resume_from: str | None = None,
+    skip_confirmation: bool = False,
+) -> Dict[str, Any]:
     _load_env()
     config = load_config(config_path)
 
@@ -210,6 +214,7 @@ def run_pipeline(config_path: str, resume_from: str | None = None) -> Dict[str, 
             evidence=config.inference.evidence,
             query=effective_query,
             save_circuit_image=config.output.save_circuit_image,
+            skip_confirmation=skip_confirmation,
         )
     elif config.inference.backend.type.startswith("navigator"):
         try:
