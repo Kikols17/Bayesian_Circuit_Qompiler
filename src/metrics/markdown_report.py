@@ -177,6 +177,91 @@ def _classify_gates(gate_counts: Dict[str, int], gate_sizes: Optional[Dict[int, 
     return {"single_qubit": single, "two_qubit": two, "multi_qubit": multi}
 
 
+def _summary_row(payload: Dict[str, Any]) -> List[tuple]:
+    config = payload.get("config") or {}
+    network = payload.get("network_stats") or {}
+    circuit = payload.get("circuit_stats") or {}
+    transpiled = payload.get("transpiled_stats") or {}
+    accuracy = payload.get("accuracy") or {}
+    execution = payload.get("execution") or {}
+    system = payload.get("system") or {}
+    meta = payload.get("circuit_metadata") or {}
+
+    gate_counts = circuit.get("operation_counts") or {}
+    gate_buckets = _classify_gates(gate_counts, circuit.get("gate_sizes"))
+    num_ops = circuit.get("num_operations") or 0
+    two_q_ratio = (gate_buckets["two_qubit"] / num_ops) if num_ops else None
+    gates_per_qubit = (num_ops / circuit["num_wires"]) if circuit.get("num_wires") else None
+
+    return [
+        ("experiment", payload.get("experiment")),
+        ("timestamp", payload.get("timestamp")),
+        ("git_commit", system.get("git_commit")),
+        ("compiler", config.get("compiler")),
+        ("encoding", config.get("encoding")),
+        ("backend_type", config.get("backend_type")),
+        ("device", config.get("device")),
+        ("shots", config.get("shots")),
+        ("network_seed", config.get("network_seed")),
+        ("evidence", config.get("evidence")),
+        ("query", config.get("query")),
+        ("baseline_method", config.get("baseline_method")),
+        ("num_nodes", network.get("num_nodes")),
+        ("num_edges", network.get("num_edges")),
+        ("max_in_degree", network.get("max_in_degree")),
+        ("avg_in_degree", network.get("avg_in_degree")),
+        ("max_cardinality", network.get("max_cardinality")),
+        ("avg_cardinality", network.get("avg_cardinality")),
+        ("total_cpt_entries", network.get("total_cpt_entries")),
+        ("compile_time_s", payload.get("compile_time_s")),
+        ("mode", meta.get("mode")),
+        ("num_grover_iterations", meta.get("num_iterations")),
+        ("approximation", meta.get("approximation")),
+        ("num_qubits", circuit.get("num_wires")),
+        ("num_clbits", circuit.get("num_clbits")),
+        ("circuit_depth", circuit.get("depth")),
+        ("num_operations", num_ops),
+        ("num_parameters", circuit.get("num_parameters")),
+        ("num_measurements", circuit.get("num_measurements")),
+        ("single_qubit_gates", gate_buckets["single_qubit"]),
+        ("two_qubit_gates", gate_buckets["two_qubit"]),
+        ("multi_qubit_gates", gate_buckets["multi_qubit"]),
+        ("two_qubit_gate_ratio", two_q_ratio),
+        ("gates_per_qubit", gates_per_qubit),
+        ("transpiled_depth", transpiled.get("depth")),
+        ("transpiled_num_qubits", transpiled.get("num_wires")),
+        ("transpiled_num_operations", transpiled.get("num_operations")),
+        ("run_time_s", payload.get("run_time_s")),
+        ("shots_requested", execution.get("shots_requested")),
+        ("effective_samples", execution.get("effective_samples")),
+        ("evidence_match_rate", execution.get("evidence_match_rate")),
+        ("shots_per_effective_sample", execution.get("shots_per_effective_sample")),
+        ("baseline_time_s", payload.get("baseline_time_s")),
+        ("speedup_quantum_vs_baseline", accuracy.get("speedup")),
+        ("kl_divergence", accuracy.get("kl_divergence")),
+        ("tv_distance", accuracy.get("tv_distance")),
+        ("hellinger_distance", accuracy.get("hellinger_distance")),
+        ("js_divergence", accuracy.get("js_divergence")),
+        ("l1_error", accuracy.get("l1_error")),
+        ("l2_error", accuracy.get("l2_error")),
+        ("top1_rank_correct", accuracy.get("top1_rank_correct")),
+        ("max_prob_error", accuracy.get("max_prob_error")),
+        ("python", system.get("python")),
+        ("pennylane", system.get("pennylane")),
+        ("qiskit", system.get("qiskit")),
+    ]
+
+
+def _summary_table(payload: Dict[str, Any]) -> str:
+    row = _summary_row(payload)
+    headers = [k for k, _ in row]
+    values = [_fmt(v) for _, v in row]
+    header_line = "| " + " | ".join(headers) + " |"
+    sep_line = "| " + " | ".join("---" for _ in headers) + " |"
+    value_line = "| " + " | ".join(values) + " |"
+    return "\n".join([header_line, sep_line, value_line])
+
+
 def build_report(payload: Dict[str, Any]) -> str:
     config = payload.get("config") or {}
     network = payload.get("network_stats") or {}
@@ -309,6 +394,10 @@ def build_report(payload: Dict[str, Any]) -> str:
         sections.append("## Artifacts\n")
         sections.append(_table([(k, v) for k, v in artifacts.items()]))
         sections.append("")
+
+    sections.append("## Summary row\n")
+    sections.append(_summary_table(payload))
+    sections.append("")
 
     return "\n".join(sections).rstrip() + "\n"
 
