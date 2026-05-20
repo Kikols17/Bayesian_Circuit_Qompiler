@@ -42,23 +42,26 @@ def _greedy_distinguishing_bits(
     target_idx: int,
     others: Sequence[int],
     n: int,
-    excluded_bit: int,
+    excluded_bits: Sequence[int],
 ) -> List[int]:
-    """Smallest set of bit positions (excluding `excluded_bit`) that, for each
+    """Smallest set of bit positions (excluding `excluded_bits`) that, for each
     state in `others`, contains at least one bit where it differs from `target_idx`.
 
     Greedy set-cover: pick the bit that disambiguates the most remaining states,
     add it to the set, drop those states, repeat. Approximation ratio O(log k).
+    Returns None if some `other` cannot be distinguished using the allowed bits.
     """
+    excluded = set(excluded_bits)
     differ_sets: List[set] = []
     for s in others:
         bits = {
             i for i in range(n)
-            if i != excluded_bit
+            if i not in excluded
             and ((s >> (n - 1 - i)) & 1) != ((target_idx >> (n - 1 - i)) & 1)
         }
-        if bits:
-            differ_sets.append(bits)
+        if not bits:
+            return None  # type: ignore[return-value]
+        differ_sets.append(bits)
 
     chosen: List[int] = []
     while differ_sets:
@@ -83,14 +86,23 @@ def _apply_sparse_state_prep(
     Convention: bit (n-1) of each index is interpreted as the value on
     target_wires[0] (MSB), bit 0 on target_wires[-1] (LSB).
 
-    Algorithm: pairwise merging in U^† direction. At each step take the two
-    active nodes with smallest amplitudes, find a differing bit position, and
-    apply a multi-controlled Ry that maps the pair into a single basis state.
-    Controls are chosen by greedy set-cover to be the smallest set that
-    distinguishes the pair from all *other* active states — this keeps the
-    multi-controlled rotation count from blowing up via Qiskit's noancilla
-    expansion. After k-1 merges, X-gates map the surviving state to |0>. U is
-    the reverse of those steps applied to |0>.
+    Algorithm: pairwise merging in U^† direction. At each step pick the
+    pair (a, b) with the smallest Hamming distance, ties broken by smaller
+    amplitude sum; min-HD first because each unit of Hamming distance adds
+    two bare CNOTs to the merge, so HD=1 pairs are cheapest. Let S be the
+    bit positions where a and b differ and q = S[0] the pivot. The merge
+    sandwiches a controlled Ry on q between two layers of *bare* CNOTs
+    CX(q -> i) for i in S \\ {q}. The pre-CX layer flips bits in S \\ {q}
+    on every state with q=1, compressing the pair's difference to bit q
+    alone (and temporarily transforming other q=1 states). The Ry, gated
+    by a control set that distinguishes the post-CX pair pattern (= b on
+    all non-q bits) from every post-CX other, merges the pair into b. The
+    post-CX layer flips bits back; for any state not touched by the Ry the
+    two CNOT layers cancel, so other states are restored. Control selection
+    uses greedy set-cover on the post-CX bit patterns, which lets bits in
+    S \\ {q} be used as controls without colliding with the CNOT targets
+    (the CXs are bare, not controlled, so target/control collision never
+    arises).
     """
     n = len(target_wires)
     if not indices:
@@ -101,24 +113,60 @@ def _apply_sparse_state_prep(
     operations: List[Dict[str, object]] = []
 
     while len(nodes) > 1:
-        nodes.sort(key=lambda t: abs(t[1]))
-        idx_a, amp_a = nodes[0]
-        idx_b, amp_b = nodes[1]
-        others = [idx for idx, _ in nodes[2:]]
+        best_i = best_j = -1
+        best_key = None
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                hd = bin(nodes[i][0] ^ nodes[j][0]).count("1")
+                amp_sum = abs(nodes[i][1]) + abs(nodes[j][1])
+                key = (hd, amp_sum)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_i, best_j = i, j
 
-        diff_pos = next(
+        if abs(nodes[best_j][1]) < abs(nodes[best_i][1]):
+            best_i, best_j = best_j, best_i
+
+        idx_a, amp_a = nodes[best_i]
+        idx_b, amp_b = nodes[best_j]
+        others = [t[0] for k, t in enumerate(nodes) if k != best_i and k != best_j]
+
+        diff_bits = [
             i for i in range(n)
             if ((idx_a >> (n - 1 - i)) & 1) != ((idx_b >> (n - 1 - i)) & 1)
-        )
+        ]
+        diff_pos = diff_bits[0]
 
         if ((idx_a >> (n - 1 - diff_pos)) & 1) == 0:
             idx_a, idx_b = idx_b, idx_a
             amp_a, amp_b = amp_b, amp_a
 
-        chosen_bits = _greedy_distinguishing_bits(idx_a, others, n, excluded_bit=diff_pos)
+        other_diff_bits = diff_bits[1:]
+
+        q_mask = 1 << (n - 1 - diff_pos)
+        s_minus_q_mask = 0
+        for i in other_diff_bits:
+            s_minus_q_mask |= 1 << (n - 1 - i)
+
+        others_post_cx = [
+            (c ^ s_minus_q_mask) if (c & q_mask) else c
+            for c in others
+        ]
+
+        chosen_bits = _greedy_distinguishing_bits(
+            idx_b, others_post_cx, n, excluded_bits=[diff_pos]
+        )
+        if chosen_bits is None:
+            raise NotImplementedError(
+                "Sparse SP merge: post-CX image of some other active state "
+                "matches the pair on every non-pivot bit. The pair-merge "
+                "rotation cannot fire selectively without an ancilla qubit. "
+                f"Pair=({idx_a:0{n}b}, {idx_b:0{n}b}), q={diff_pos}, "
+                f"others_post_cx={[f'{o:0{n}b}' for o in others_post_cx]}."
+            )
 
         controls = [
-            (target_wires[c], (idx_a >> (n - 1 - c)) & 1)
+            (target_wires[c], (idx_b >> (n - 1 - c)) & 1)
             for c in chosen_bits
         ]
 
@@ -128,10 +176,12 @@ def _apply_sparse_state_prep(
             "target_wire": target_wires[diff_pos],
             "theta_forward": theta_forward,
             "controls": controls,
+            "other_diff_wires": [target_wires[i] for i in other_diff_bits],
         })
 
-        nodes.pop(0)
-        nodes.pop(0)
+        hi, lo = (best_i, best_j) if best_i > best_j else (best_j, best_i)
+        nodes.pop(hi)
+        nodes.pop(lo)
         merged_amp = math.sqrt(amp_a * amp_a + amp_b * amp_b)
         nodes.append((idx_b, merged_amp))
 
@@ -147,14 +197,24 @@ def _apply_sparse_state_prep(
         ctrl_wires = [w for w, _ in controls]
         target_wire = op["target_wire"]
         theta = float(op["theta_forward"])  # type: ignore[arg-type]
+        other_diff_wires = op["other_diff_wires"]  # type: ignore[assignment]
+
+        for ow in other_diff_wires:
+            qc.cx(target_wire, ow)
+
         for w in zero_ctrl_wires:
             qc.x(w)
+
         if ctrl_wires:
             qc.mcry(theta, ctrl_wires, target_wire)
         else:
             qc.ry(theta, target_wire)
+
         for w in zero_ctrl_wires:
             qc.x(w)
+
+        for ow in other_diff_wires:
+            qc.cx(target_wire, ow)
 
 
 class QiskitCircuitBuilder(CircuitBuilderBase):
