@@ -35,7 +35,7 @@ inference:
     seed: 123
   backend:
     type: "qiskit_ibm"
-    device: "noisy:ibm_fez"
+    device: "ibm_fez"
     wires: 10
   evidence:
     Dist1: 20

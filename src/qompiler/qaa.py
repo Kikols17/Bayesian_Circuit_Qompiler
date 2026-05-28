@@ -139,25 +139,15 @@ class QAAQompiler(QompilerBase):
             # Pre-conditioned mode: compute P(query | evidence) classically and
             # encode it as amplitudes on the query qubits only. No evidence qubits
             # are allocated.
-            #
-            # Binary qubit layout is used regardless of which amplitude-encoding
-            # variant the user requested. The encoding flag controls *how* the
-            # amplitude vector is prepared (dense StatePreparation vs. sparse
-            # tree-walk SP), not the qubit-to-state mapping. One-hot would
-            # allocate sum(card) qubits and require a 2^sum-sized amplitude
-            # vector — infeasible.
-            if encoding == "one_hot":
-                raise ValueError(
-                    "QAA preconditioned mode does not support encoding='one_hot' "
-                    "(would allocate sum(card) qubits with a 2^sum amplitude vector; "
-                    "infeasible at scale). Use 'binary' or 'sparse_topk' instead."
-                )
 
             query_cards = [int(model.get_cpds(node).variable_card) for node in query]
 
             if encoding == "sparse_topk":
                 k = int(encoding_params["k"])
                 marginalize = list(encoding_params["marginalize"])
+            elif encoding == "one_hot":
+                k = int(encoding_params["k"]) if encoding_params else None
+                marginalize = list(encoding_params.get("marginalize", [])) if encoding_params else []
             elif encoding == "binary":
                 k = None
                 marginalize = []
@@ -171,8 +161,92 @@ class QAAQompiler(QompilerBase):
                 cond_probs, query, query_cards, marginalize
             )
 
+            if encoding == "one_hot":
+                q_map: Dict[str, List[int]] = {}
+                w = 0
+                onehot_qubits_per_var: List[int] = []
+                for node, card in zip(effective_query, effective_cards):
+                    q_map[node] = list(range(w, w + card))
+                    onehot_qubits_per_var.append(card)
+                    w += card
+                num_wires = w
+                query_wire_list = [wire for node in effective_query for wire in q_map[node]]
+
+                wire_offsets: List[int] = []
+                offset = 0
+                for c in onehot_qubits_per_var:
+                    wire_offsets.append(offset)
+                    offset += c
+
+                if k is not None:
+                    indexed = sorted(
+                        enumerate(cond_probs), key=lambda t: t[1], reverse=True
+                    )
+                    top = [(flat_idx, p) for flat_idx, p in indexed[:k] if p > 0.0]
+                else:
+                    top = [(flat_idx, p) for flat_idx, p in enumerate(cond_probs) if p > 0.0]
+                if not top:
+                    raise ValueError(
+                        "one_hot encoding: conditional posterior is identically zero."
+                    )
+                total = sum(p for _, p in top)
+
+                indices: List[int] = []
+                amps: List[float] = []
+                for flat_idx, p in top:
+                    coords: List[int] = []
+                    rem = flat_idx
+                    for c in reversed(effective_cards):
+                        coords.insert(0, rem % c)
+                        rem //= c
+                    oh_idx = 0
+                    for val, wire_off in zip(coords, wire_offsets):
+                        wire_pos = wire_off + val
+                        oh_idx |= 1 << (num_wires - 1 - wire_pos)
+                    indices.append(oh_idx)
+                    amps.append(math.sqrt(p / total))
+
+                padded_size = 2 ** num_wires
+                padded_probs = [0.0] * padded_size
+                for idx, amp in zip(indices, amps):
+                    padded_probs[idx] = amp * amp
+
+                metadata: Dict[str, Any] = {
+                    "query_wires": query_wire_list,
+                    "encoding": encoding,
+                    "encoding_params": dict(encoding_params),
+                    "mode": "preconditioned",
+                    "effective_query": effective_query,
+                    "marginalized": marginalize,
+                    "sparse_state": {
+                        "indices": indices,
+                        "amps": amps,
+                        "num_qubits": num_wires,
+                        "k_requested": k if k is not None else len(indices),
+                        "k_effective": len(indices),
+                        "truncated_mass": float(total),
+                    },
+                }
+
+                def circuit_fn(
+                    wires: Dict[str, List[int]],
+                    evidence_map: Dict[str, int],
+                    query_nodes: List[str],
+                ):
+                    amps_pl = [math.sqrt(p) for p in padded_probs]
+                    qml.AmplitudeEmbedding(amps_pl, wires=query_wire_list, normalize=True)
+                    return qml.probs(wires=query_wire_list)
+
+                return CircuitSpec(
+                    name=self.name,
+                    num_wires=num_wires,
+                    wires_map=q_map,
+                    circuit_fn=circuit_fn,
+                    metadata=metadata,
+                )
+
             _bin_map = build_wires_map(model, encoding="binary")
-            q_map: Dict[str, List[int]] = {}
+            q_map = {}
             w = 0
             for node in effective_query:
                 bits = len(_bin_map[node])
@@ -190,7 +264,7 @@ class QAAQompiler(QompilerBase):
                 )
                 padded_probs[padded_idx] = p
 
-            metadata: Dict[str, Any] = {
+            metadata = {
                 "query_wires": query_wire_list,
                 "encoding": encoding,
                 "encoding_params": dict(encoding_params),

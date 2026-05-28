@@ -45,6 +45,32 @@ def qubit_count_per_card(card: int, encoding: str) -> int:
     raise ValueError(f"Unknown encoding: {encoding!r}")
 
 
+def decode_node_value(node_bits: str, encoding: str):
+    """Decode a node's measured bits to its integer value.
+
+    For binary/sparse_topk this is `int(node_bits, 2)`. For one_hot it is the
+    position of the single '1' bit (MSB-first). Returns None when the bitstring
+    is not a valid codeword (zero or multiple bits set in a one-hot register) —
+    callers use this for post-selection.
+    """
+    if encoding == "one_hot":
+        ones = [i for i, b in enumerate(node_bits) if b == "1"]
+        if len(ones) != 1:
+            return None
+        return ones[0]
+    return int(node_bits, 2)
+
+
+def card_per_node(num_wires: int, encoding: str) -> int:
+    """Inverse of `qubit_count_per_card`: how many valid values a node's
+    `num_wires` qubits can represent under the given encoding."""
+    if encoding == "one_hot":
+        return num_wires
+    if encoding in ("binary", "sparse_topk"):
+        return 2 ** num_wires
+    raise ValueError(f"Unknown encoding: {encoding!r}")
+
+
 def build_wires_map(
     model: DiscreteBayesianNetwork,
     encoding: str,

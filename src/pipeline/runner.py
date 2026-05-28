@@ -35,6 +35,7 @@ from src.networks.export import save_cpd_markdown
 from src.networks.visualize import save_bayesian_network_plot
 from src.baseline import get_baseline
 from src.qompiler import get_qompiler
+from src.qompiler.base import decode_node_value
 from src.utils.io import ensure_dir, write_json, write_yaml
 
 
@@ -259,6 +260,8 @@ def run_pipeline(
     if baseline_result is not None:
         baseline_distribution = baseline_result.get("distribution")
 
+    encoding = circuit_spec.metadata.get("encoding", "binary")
+
     plot_path = None
     if isinstance(run_result.get("probs"), list):
         plot_path = save_probabilities_plot(
@@ -268,6 +271,7 @@ def run_pipeline(
             query=effective_query,
             wires_map=circuit_spec.wires_map,
             baseline_distribution=baseline_distribution,
+            encoding=encoding,
         )
 
     # compute and save probability evolution (top outcomes by final prob)
@@ -297,6 +301,7 @@ def run_pipeline(
                 query=effective_query,
                 wires_map=circuit_spec.wires_map,
                 top_n=10,
+                encoding=encoding,
             )
         except Exception:
             evolution_path = None
@@ -310,13 +315,15 @@ def run_pipeline(
         probs: List[float], query: List[str], wires_map: Dict[str, List[int]]
     ) -> Dict[str, float]:
         if len(query) <= 1:
-            return {str(idx): float(val) for idx, val in enumerate(probs)}
+            if encoding != "one_hot":
+                return {str(idx): float(val) for idx, val in enumerate(probs)}
 
         total_bits = int(math.log2(len(probs))) if len(probs) > 0 else 0
         if 2 ** total_bits != len(probs):
             return {str(idx): float(val) for idx, val in enumerate(probs)}
 
         key_distribution: Dict[str, float] = {}
+        kept_mass = 0.0
         for idx, prob in enumerate(probs):
             if prob <= 0.0:
                 continue
@@ -324,14 +331,28 @@ def run_pipeline(
             bitstr = format(idx, f"0{total_bits}b")
             position = 0
             coords: list[str] = []
+            valid = True
             for node in query:
                 num_bits = len(wires_map[node])
                 node_bits = bitstr[position : position + num_bits]
                 position += num_bits
-                coords.append(str(int(node_bits, 2)))
+                val = decode_node_value(node_bits, encoding)
+                if val is None:
+                    valid = False
+                    break
+                coords.append(str(val))
+            if not valid:
+                continue
 
-            key = ",".join(f"{node}={value}" for node, value in zip(query, coords))
-            key_distribution[key] = float(prob)
+            if len(query) == 1:
+                key = coords[0]
+            else:
+                key = ",".join(f"{node}={value}" for node, value in zip(query, coords))
+            key_distribution[key] = key_distribution.get(key, 0.0) + float(prob)
+            kept_mass += float(prob)
+
+        if encoding == "one_hot" and kept_mass > 0.0:
+            key_distribution = {k: v / kept_mass for k, v in key_distribution.items()}
 
         return key_distribution
 

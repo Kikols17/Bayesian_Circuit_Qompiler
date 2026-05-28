@@ -8,39 +8,52 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from src.qompiler.base import card_per_node, decode_node_value
 from src.utils.io import ensure_dir
 
 
 def _query_probs_to_matrix(
-    probs: List[float], query: List[str], wires_map: Dict[str, List[int]]
+    probs: List[float], query: List[str], wires_map: Dict[str, List[int]],
+    encoding: str = "binary",
 ) -> tuple[list[list[float]], list[int], list[int]]:
-    x_state_count = 2 ** len(wires_map[query[0]])
-    y_state_count = 2 ** len(wires_map[query[1]])
-    expected_length = x_state_count * y_state_count
-    if len(probs) != expected_length:
-        raise ValueError(
-            f"Expected {expected_length} probability values for query {query}, got {len(probs)}"
-        )
+    x_state_count = card_per_node(len(wires_map[query[0]]), encoding)
+    y_state_count = card_per_node(len(wires_map[query[1]]), encoding)
 
     matrix = [[0.0 for _ in range(x_state_count)] for _ in range(y_state_count)]
     total_bits = len(wires_map[query[0]]) + len(wires_map[query[1]])
 
+    if len(probs) != 2 ** total_bits:
+        raise ValueError(
+            f"Expected {2 ** total_bits} probability values for query {query} "
+            f"({encoding} encoding), got {len(probs)}"
+        )
+
     for idx, prob in enumerate(probs):
+        if prob <= 0.0:
+            continue
         bitstr = format(idx, f"0{total_bits}b")
         x_bits = bitstr[: len(wires_map[query[0]])]
         y_bits = bitstr[len(wires_map[query[0]]) :]
-        x_state = int(x_bits, 2)
-        y_state = int(y_bits, 2)
-        matrix[y_state][x_state] = prob
+        x_state = decode_node_value(x_bits, encoding)
+        y_state = decode_node_value(y_bits, encoding)
+        if x_state is None or y_state is None:
+            continue
+        matrix[y_state][x_state] += prob
+
+    if encoding == "one_hot":
+        total = sum(p for row in matrix for p in row)
+        if total > 0:
+            matrix = [[p / total for p in row] for row in matrix]
 
     return matrix, list(range(x_state_count)), list(range(y_state_count))
 
 
 def _parse_dict_distribution(
-    distribution: Dict[str, float], query: List[str], wires_map: Dict[str, List[int]]
+    distribution: Dict[str, float], query: List[str], wires_map: Dict[str, List[int]],
+    encoding: str = "binary",
 ) -> tuple[list[float] | list[list[float]], list[int], list[int]]:
     if len(query) == 1:
-        state_count = 2 ** len(wires_map[query[0]])
+        state_count = card_per_node(len(wires_map[query[0]]), encoding)
         probs = [0.0] * state_count
         for key, value in distribution.items():
             if "=" in key:
@@ -53,8 +66,8 @@ def _parse_dict_distribution(
         return probs, list(range(state_count)), []
 
     if len(query) == 2:
-        x_state_count = 2 ** len(wires_map[query[0]])
-        y_state_count = 2 ** len(wires_map[query[1]])
+        x_state_count = card_per_node(len(wires_map[query[0]]), encoding)
+        y_state_count = card_per_node(len(wires_map[query[1]]), encoding)
         matrix = [[0.0 for _ in range(x_state_count)] for _ in range(y_state_count)]
         for key, value in distribution.items():
             coords = []
@@ -116,13 +129,14 @@ def save_probabilities_plot(
     query: Optional[List[str]] = None,
     wires_map: Optional[Dict[str, List[int]]] = None,
     baseline_distribution: Optional[Dict[str, float]] = None,
+    encoding: str = "binary",
 ) -> str:
     ensure_dir(output_dir)
     baseline_available = baseline_distribution is not None and query is not None and wires_map is not None
 
     if baseline_available and len(query) == 2:
-        quantum_matrix, x_ticks, y_ticks = _query_probs_to_matrix(probs, query, wires_map)
-        baseline_matrix, _, _ = _parse_dict_distribution(baseline_distribution, query, wires_map)
+        quantum_matrix, x_ticks, y_ticks = _query_probs_to_matrix(probs, query, wires_map, encoding)
+        baseline_matrix, _, _ = _parse_dict_distribution(baseline_distribution, query, wires_map, encoding)
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
         im0 = _plot_heatmap(
@@ -140,7 +154,7 @@ def save_probabilities_plot(
 
     if baseline_available and len(query) == 1:
         quantum_probs = [float(val) for val in probs]
-        baseline_probs, x_ticks, _ = _parse_dict_distribution(baseline_distribution, query, wires_map)
+        baseline_probs, x_ticks, _ = _parse_dict_distribution(baseline_distribution, query, wires_map, encoding)
         fig, ax = plt.subplots(1, 1, figsize=(10, 5))
         x = list(range(len(quantum_probs)))
         width = 0.35
@@ -160,7 +174,7 @@ def save_probabilities_plot(
 
     if query is not None and wires_map is not None and len(query) == 2:
         try:
-            matrix, x_ticks, y_ticks = _query_probs_to_matrix(probs, query, wires_map)
+            matrix, x_ticks, y_ticks = _query_probs_to_matrix(probs, query, wires_map, encoding)
             plt.figure(figsize=(8, 6))
             im = plt.imshow(matrix, cmap="hot", origin="lower", aspect="auto")
             plt.colorbar(im, label="Probability")
@@ -301,10 +315,12 @@ def save_probability_evolution_plot(
     query: Optional[List[str]] = None,
     wires_map: Optional[Dict[str, List[int]]] = None,
     top_n: int = 10,
+    encoding: str = "binary",
 ) -> str:
     """Save a plot showing evolution of probabilities over matched shots.
 
     The plot shows the top `top_n` outcomes sorted by final probability.
+    For one_hot encoding, only valid one-hot indices are eligible for top-N.
     """
     ensure_dir(output_dir)
     if not prob_history:
@@ -315,14 +331,31 @@ def save_probability_evolution_plot(
         return ""
 
     final = hist[-1]
-    max_k = min(top_n, final.size)
-    order = np.argsort(-final)
+    if encoding == "one_hot" and query is not None and wires_map is not None:
+        node_sizes = [len(wires_map[node]) for node in query]
+        total_bits = sum(node_sizes)
+        valid_mask = np.zeros(final.size, dtype=bool)
+        for idx in range(final.size):
+            bitstr = format(idx, f"0{total_bits}b")
+            pos = 0
+            ok = True
+            for size in node_sizes:
+                seg = bitstr[pos:pos + size]
+                pos += size
+                if seg.count("1") != 1:
+                    ok = False
+                    break
+            valid_mask[idx] = ok
+        scored = np.where(valid_mask, final, -1.0)
+    else:
+        scored = final
+    max_k = min(top_n, scored.size)
+    order = np.argsort(-scored)
     top_idx = order[:max_k]
 
     def _index_label(idx: int) -> str:
         if query is None or wires_map is None or len(query) <= 1:
             return str(idx)
-        # build label like node=val,node2=val2
         node_sizes = [len(wires_map[node]) for node in query]
         total_bits = sum(node_sizes)
         bitstr = format(idx, f"0{total_bits}b")
@@ -331,7 +364,8 @@ def save_probability_evolution_plot(
         for node, size in zip(query, node_sizes):
             seg = bitstr[pos : pos + size]
             pos += size
-            coords.append(str(int(seg, 2)))
+            val = decode_node_value(seg, encoding)
+            coords.append(str(val) if val is not None else "?")
         return ",".join(f"{n}={v}" for n, v in zip(query, coords))
 
     shots = np.arange(1, hist.shape[0] + 1)

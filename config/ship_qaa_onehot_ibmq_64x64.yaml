@@ -1,7 +1,7 @@
-#pos = 36, 25
+# pos = 36, 25
 experiment:
-  name: "ship_localization_qaa_ibmq_64x64_sparse"
-  output_dir: "outputs/ship_localization_qaa_ibmq_64x64_sparse"
+  name: "ship_localization_qaa_ibmq_64x64_one_hot"
+  output_dir: "outputs/ship_localization_qaa_ibmq_64x64_one_hot"
   output:
     save_cpd_md: true
     save_circuit_image: true
@@ -22,7 +22,7 @@ network:
 
 inference:
   compiler: "QAA"
-  encoding: "sparse_topk"
+  encoding: "one_hot"
   encoding_params:
     k: 16
     marginalize: []
@@ -36,7 +36,7 @@ inference:
   backend:
     type: "qiskit_ibm"
     device: "ibm_fez"
-    wires: 10
+    wires: 128
   evidence:
     Dist1: 16
     Bear1: 13

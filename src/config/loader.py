@@ -15,7 +15,7 @@ from .types import (
 )
 
 _SUPPORTED_ENCODINGS = ("binary", "one_hot", "sparse_topk")
-_SPARSE_TOPK_REQUIRED_KEYS = ("k", "marginalize")
+_TOPK_REQUIRED_KEYS = ("k", "marginalize")
 
 
 def _get_required(data: Dict[str, Any], key: str) -> Any:
@@ -33,7 +33,7 @@ def _validate_encoding_params(
             f"Supported values: {list(_SUPPORTED_ENCODINGS)}"
         )
 
-    if encoding in ("binary", "one_hot"):
+    if encoding == "binary":
         if params:
             raise ValueError(
                 f"inference.encoding={encoding!r} accepts no parameters; "
@@ -41,18 +41,22 @@ def _validate_encoding_params(
             )
         return
 
-    missing = [k for k in _SPARSE_TOPK_REQUIRED_KEYS if k not in params]
+    if encoding == "one_hot" and not params:
+        return
+
+    missing = [k for k in _TOPK_REQUIRED_KEYS if k not in params]
     if missing:
         raise ValueError(
-            "inference.encoding='sparse_topk' requires the following encoding_params "
-            f"keys, but they are missing: {missing}. "
-            "Required schema: {k: <positive int>, marginalize: <list of query names>}."
+            f"inference.encoding={encoding!r} with encoding_params requires the keys: "
+            f"{list(_TOPK_REQUIRED_KEYS)}, but missing: {missing}. "
+            "Required schema: {k: <positive int>, marginalize: <list of query names>}. "
+            "Pass `encoding_params: {}` for full-posterior one_hot (no truncation)."
         )
-    extra = [k for k in params if k not in _SPARSE_TOPK_REQUIRED_KEYS]
+    extra = [k for k in params if k not in _TOPK_REQUIRED_KEYS]
     if extra:
         raise ValueError(
-            f"inference.encoding='sparse_topk' got unknown encoding_params keys: {extra}. "
-            f"Allowed keys: {list(_SPARSE_TOPK_REQUIRED_KEYS)}."
+            f"inference.encoding={encoding!r} got unknown encoding_params keys: {extra}. "
+            f"Allowed keys: {list(_TOPK_REQUIRED_KEYS)}."
         )
 
     k = params["k"]
