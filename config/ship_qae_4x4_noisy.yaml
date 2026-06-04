@@ -1,0 +1,49 @@
+experiment:
+  name: "ship_localization_qae_4x4_noisy"
+  output_dir: "outputs/ship_localization_qae_4x4_noisy"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 4
+    lighthouses:
+      - [0, 0]
+      - [3, 3]
+    num_dist_bins: 2
+    num_bear_bins: 2
+    dist_noise: [0.85, 0.15, 0.0, 0.0]
+    bear_noise: [0.85, 0.15, 0.0, 0.0]
+
+inference:
+  compiler: "QAE"
+  encoding: "binary"
+  encoding_params: {}
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 1024
+    seed: 123
+  backend:
+    type: "qiskit_aer"
+    device: "noisy:ibm_fez"
+    params:
+      mlae_schedule: [0, 1, 2]
+      driver: "mlae"
+  # AerSimulator + FakeFez noise model. Schedule truncated to [0,1,2] because
+  # A·Q^4 (~30k CX) is well past the fez coherence wall; [0,1,2] keeps the
+  # deepest circuit around A·Q^2 (~16k CX) — still high, but the run finishes.
+  evidence:
+    Dist1: 1
+    Bear1: 1
+    Dist2: 1
+    Bear2: 0
+  query:
+    - "X"
+    - "Y"

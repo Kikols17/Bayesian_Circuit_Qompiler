@@ -5,6 +5,7 @@ from typing import Type
 from .base import QompilerBase
 from .dcm import DCMQompiler
 from .qaa import QAAQompiler
+from .qae import QAEQompiler
 
 
 def get_qompiler(name: str) -> QompilerBase:
@@ -12,6 +13,7 @@ def get_qompiler(name: str) -> QompilerBase:
     registry: dict[str, Type[QompilerBase]] = {
         "DCM": DCMQompiler,
         "QAA": QAAQompiler,
+        "QAE": QAEQompiler,
     }
     if name_upper not in registry:
         raise ValueError(f"Unknown Qompiler: {name}")

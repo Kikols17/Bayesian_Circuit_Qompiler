@@ -15,6 +15,7 @@ from src.execution.navigator_backend import (
     run_navigator,
 )
 from src.execution.pennylane_backend import run_pennylane
+from src.execution.qae_runner import run_qae
 from src.execution.qiskit_backend import run_qiskit
 from src.utils.env_validation import require_env
 from src.metrics.plots import (
@@ -196,7 +197,19 @@ def run_pipeline(
     wandb_logger.log_compile_metrics(circuit_spec, compile_time)
 
     run_start = time.perf_counter()
-    if config.inference.backend.type.startswith("pennylane"):
+    if config.inference.compiler.strip().upper() == "QAE":
+        run_result = run_qae(
+            output_dir=output_dir,
+            spec=circuit_spec,
+            circuit_config=config.inference.circuit,
+            backend_config=config.inference.backend,
+            network=network,
+            evidence=config.inference.evidence,
+            query=effective_query,
+            save_circuit_image=config.output.save_circuit_image,
+            skip_confirmation=skip_confirmation,
+        )
+    elif config.inference.backend.type.startswith("pennylane"):
         run_result = run_pennylane(
             output_dir=output_dir,
             spec=circuit_spec,
