@@ -1,0 +1,52 @@
+experiment:
+  name: "ship_qae_enumerate_iqae_8x8"
+  output_dir: "outputs/ship_qae_enumerate_iqae_8x8"
+  output:
+    save_cpd_md: false
+    save_circuit_image: false
+
+network:
+  builder: "generator"
+  save_image: false
+  type: "ship_localization"
+  params:
+    grid_size: 8
+    lighthouses:
+      - [0, 0]
+      - [7, 7]
+    num_dist_bins: 2
+    num_bear_bins: 2
+    dist_noise: [0.85, 0.15, 0.0, 0.0]
+    bear_noise: [0.85, 0.15, 0.0, 0.0]
+
+inference:
+  compiler: "QAE"
+  encoding: "binary"
+  encoding_params: {}
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 100
+    seed: 123
+  # Full-posterior reconstruction (enumerate every cell) with the IQAE driver
+  # swapped in via the modular engine instead of the legacy MLAE. Same faithful
+  # loader and same ship/evidence as ship_qae_8x8.yaml -- isolates the driver
+  # swap for an apples-to-apples KL comparison against variable_elimination.
+  # 64 cells, each a full IQAE run (statevector, ~10 qubits): a few minutes.
+  backend:
+    type: "qiskit_aer"
+    params:
+      loader: "faithful"
+      driver: "iqae"
+      driver_params: {epsilon: 0.02, alpha: 0.05, shots: 100}
+      query_mode: "enumerate"
+  evidence:
+    Dist1: 0
+    Bear1: 0
+    Dist2: 1
+    Bear2: 1
+  query:
+    - "X"
+    - "Y"

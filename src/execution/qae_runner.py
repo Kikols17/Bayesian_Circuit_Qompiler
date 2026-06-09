@@ -76,18 +76,24 @@ def joint_qubit_layout(
 
 
 def load_joint(
-    qc: QuantumCircuit, model: DiscreteBayesianNetwork, layout: Dict[str, List[int]]
+    qc: QuantumCircuit,
+    model: DiscreteBayesianNetwork,
+    layout: Dict[str, List[int]],
+    node_order: Optional[Sequence[str]] = None,
 ) -> None:
     """Prepare sum_x sqrt(P(x)) |x> on the qubits referenced by `layout`.
 
-    Walks the network in `model.nodes()` order. For each node: unconditional
-    StatePreparation of its prior column on the node's qubits if it has no
-    parents; otherwise one controlled-StatePreparation per parent assignment,
-    with the parent register X-conjugated to make the all-ones-controls form
-    fire on the desired pattern. Target wires are appended reversed to
+    Walks the network in `node_order` (default `model.nodes()`). Loading is only
+    correct in **topological order** — a child's controlled-StatePreparation must
+    run after its parents are in superposition — so callers on networks whose
+    `model.nodes()` is not topological must pass a sorted `node_order`. For each
+    node: unconditional StatePreparation of its prior column on the node's qubits
+    if it has no parents; otherwise one controlled-StatePreparation per parent
+    assignment, with the parent register X-conjugated to make the all-ones-controls
+    form fire on the desired pattern. Target wires are appended reversed to
     reconcile our MSB-first convention with qiskit's LSB-first StatePreparation.
     """
-    for node in model.nodes():
+    for node in (node_order if node_order is not None else model.nodes()):
         cpd = model.get_cpds(node)
         parents = cpd.variables[1:]
         vals = _cpd_values(model, node)
@@ -570,10 +576,38 @@ def run_qae(
         SamplerV2 (DD + measurement twirling), batched sampling.
     """
     params = dict(backend_config.params or {})
+
+    loader_name = params.get("loader", "faithful")
     driver = params.get("driver", "mlae")
+    query_mode = params.get("query_mode", "enumerate")
+
+    backend_type_pre = (backend_config.type or "").strip()
+    device_pre = (backend_config.device or "").strip()
+    is_statevector = backend_type_pre.startswith("qiskit_aer") and not device_pre.startswith("noisy:")
+    use_modular = query_mode == "single" or driver == "iqae" or loader_name != "faithful"
+    if use_modular:
+        if not is_statevector:
+            raise ValueError(
+                "Modular upstream components (query_mode='single', driver='iqae', or "
+                "a non-default loader) are wired on the noiseless statevector backend "
+                "only (backend.type='qiskit_aer' with no 'noisy:' device) — the fast "
+                "exact engine for comparing component combinations. The legacy "
+                "enumerate+mlae path still serves noisy/hardware. Got "
+                f"backend.type={backend_type_pre!r} device={device_pre!r}."
+            )
+        from src.execution.upstream import run_upstream
+
+        seed_modular = int(circuit_config.seed if circuit_config.seed is not None else 0)
+        result = run_upstream(network, dict(evidence), list(query), params, seed=seed_modular)
+        if query_mode == "single":
+            result = dict(result)
+            result["probs"] = None
+        return result
+
     if driver != "mlae":
         raise ValueError(
-            f"QAE v1 only implements driver='mlae'; got {driver!r}. IQAE is a follow-up."
+            f"legacy QAE enumerate path only implements driver='mlae'; got {driver!r}. "
+            "Use driver='iqae' (statevector) via the modular engine instead."
         )
     schedule: List[int] = list(params.get("mlae_schedule", [0, 1, 2, 4]))
     shots: int = int(params.get("shots_per_round", circuit_config.shots))
