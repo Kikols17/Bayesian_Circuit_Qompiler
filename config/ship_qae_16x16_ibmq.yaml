@@ -34,13 +34,16 @@ inference:
     type: "qiskit_ibm"
     device: "ibm_fez"
     params:
-      mlae_schedule: [0, 1]
+      mlae_schedule: [0]
       driver: "mlae"
-  # 12 state + 1 flag = 13 qubits. 256 cells × |schedule|=2 + 2 (P(e)) = 514
-  # circuits in one batched SamplerV2 job. A·Q^1 alone already exceeds the
-  # fez coherence budget; intended as a submission-path stress test. Bumping
-  # `shots` or `mlae_schedule` for fidelity will require a deeper-coherence
-  # device or error mitigation beyond DD + twirling.
+      max_circuits_per_job: 1
+  # 12 state + 1 flag = 13 qubits. ONE transpiled A circuit is ~106k CX at 16x16,
+  # which exceeds the IBM Runtime memory cap by itself — full enumerate is
+  # infeasible here. max_circuits_per_job=1 transpiles+submits a single circuit at
+  # a time so the LOCAL machine never holds all 257 huge circuits (that would OOM
+  # the PC); the first chunk OOMs the runtime (error 1336) and the hardened
+  # pipeline saves circuit.png + a report documenting the wall. "Document the
+  # wall" run, not a usable result.
   evidence:
     Dist1: 0
     Bear1: 0

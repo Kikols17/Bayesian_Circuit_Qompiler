@@ -297,6 +297,14 @@ def build_report(payload: Dict[str, Any]) -> str:
     ]))
     sections.append("")
 
+    if circuit.get("status") == "job_failed" or circuit.get("error"):
+        sections.append("## ⚠️ Run status\n")
+        sections.append(_table([
+            ("status", circuit.get("status")),
+            ("error", circuit.get("error")),
+        ]))
+        sections.append("")
+
     sections.append("## Configuration\n")
     sections.append(_table([
         ("compiler", config.get("compiler")),

@@ -373,21 +373,72 @@ def _extract_good_counts_sampler(result) -> List[int]:
     return counts
 
 
+def _parse_hw_exec_options(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse the configurable hardware-execution knobs from ``backend.params``.
+
+    These are the "shortcuts" that keep deep QAE circuits inside IBM's two
+    independent limits: the runtime container RAM (error 1336, hit *during*
+    execution by deep/twirled circuits) and the serialized job payload size
+    (error 8055, rejected *at load* time). All are optional with safe defaults so
+    existing configs keep their previous behaviour. Returned keys / defaults:
+
+    - ``optimization_level`` (int, default 1): transpiler effort, 0-3. Level 3
+      cuts CX count and depth the most -> better fidelity AND a smaller payload,
+      at the cost of higher *local* compile time. Short of changing the schedule,
+      this is the single best correctness-and-OOM lever.
+    - ``dynamical_decoupling`` (bool, default True): idle-qubit DD; fidelity only,
+      negligible payload cost.
+    - ``twirling`` (mapping):
+        - ``enable_gates`` (bool, default True): Pauli twirling of 2q gates.
+        - ``enable_measure`` (bool, default True): readout (TREX-style) twirling.
+        - ``num_randomizations`` (int | "auto", default auto): server-side twirl
+          variants generated *per circuit*. This is the dominant payload/RAM
+          multiplier -> setting it low (1-2) relieves both OOM pressures, trading
+          mitigation quality for headroom.
+        - ``shots_per_randomization`` (int | "auto", default auto).
+
+    The accuracy/advantage lever (``mlae_schedule``: more/larger Grover powers =
+    more amplification = the formal quadratic advantage, but deeper circuits) and
+    the chunk size (``max_circuits_per_job``) are parsed by the callers, not here.
+    """
+    tw = dict(params.get("twirling") or {})
+    return {
+        "optimization_level": int(params.get("optimization_level", 1)),
+        "dynamical_decoupling": bool(params.get("dynamical_decoupling", True)),
+        "twirling_enable_gates": bool(tw.get("enable_gates", True)),
+        "twirling_enable_measure": bool(tw.get("enable_measure", True)),
+        "twirling_num_randomizations": tw.get("num_randomizations", None),
+        "twirling_shots_per_randomization": tw.get("shots_per_randomization", None),
+    }
+
+
 def _print_hardware_summary(
     backend_label: str,
     num_amplitudes: int,
     num_circuits: int,
     shots: int,
     schedule: Sequence[int],
+    exec_opts: Dict[str, Any],
+    chunk_size: int,
+    n_chunks: int,
 ) -> None:
+    max_m = max(schedule) if schedule else 0
     print(f"\n--- QAE IBM Hardware Job Summary (pre-transpile) ---")
     print(f"  Backend           : {backend_label}")
     print(f"  Amplitudes to est : {num_amplitudes}  (P(e) + {num_amplitudes - 1} cells)")
-    print(f"  Circuits per job  : {num_circuits}  (schedule={list(schedule)})")
+    print(f"  Circuits total    : {num_circuits}  (schedule={list(schedule)})")
+    print(f"  Chunking          : {n_chunks} job(s) of <= {chunk_size} circuit(s)  "
+          f"(max_circuits_per_job; fights 8055 payload + 1336 RAM)")
     print(f"  Shots per circuit : {shots}")
     print(f"  Total shots       : {num_circuits * shots}")
-    print(f"  Max Grover power  : {max(schedule) if schedule else 0}  "
-          f"(deepest = A · Q^{max(schedule) if schedule else 0})")
+    print(f"  Max Grover power  : {max_m}  (deepest = A · Q^{max_m}; "
+          f"{'amplification ON -> formal advantage' if max_m > 0 else 'm=0 only -> direct readout, no amplification'})")
+    nr = exec_opts["twirling_num_randomizations"]
+    print(f"  Transpile opt lvl : {exec_opts['optimization_level']}")
+    print(f"  Dyn. decoupling   : {exec_opts['dynamical_decoupling']}")
+    print(f"  Twirling          : gates={exec_opts['twirling_enable_gates']} "
+          f"measure={exec_opts['twirling_enable_measure']} "
+          f"num_randomizations={nr if nr is not None else 'auto'}")
     print(f"  Note: per qae_prototype.md, even A·Q^1 exceeds ibm_fez's T2 budget on")
     print(f"        a 9-qubit toy; hardware results will be noise-dominated.")
     print(f"---------------------------------------------------")
@@ -409,6 +460,8 @@ def _run_qae_sampling(
     transpile_backend,           # FakeXxx (aer_noisy) or IBM backend (ibm_hw)
     backend_label: str,
     skip_confirmation: bool,
+    max_circuits_per_job: Optional[int] = None,
+    exec_opts: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, Dict[Tuple[int, ...], float], int, QuantumCircuit, Any, Any, List[QuantumCircuit]]:
     """Build all measured circuits up front, transpile once, submit as ONE job,
     distribute results back to per-amplitude (hits, totals) for MLE fit.
@@ -440,8 +493,18 @@ def _run_qae_sampling(
     num_circuits = len(circuits)
     num_amplitudes = 1 + len(cells)
 
+    if exec_opts is None:
+        exec_opts = _parse_hw_exec_options({})
+
+    chunk_size = int(max_circuits_per_job) if max_circuits_per_job else num_circuits
+    chunk_size = max(1, min(chunk_size, num_circuits))
+    n_chunks = (num_circuits + chunk_size - 1) // chunk_size
+
     if backend_kind == "ibm_hw":
-        _print_hardware_summary(backend_label, num_amplitudes, num_circuits, shots, schedule)
+        _print_hardware_summary(
+            backend_label, num_amplitudes, num_circuits, shots, schedule,
+            exec_opts, chunk_size, n_chunks,
+        )
         if skip_confirmation:
             print("Submit to hardware? [y/N] y  (auto-confirmed via -y)")
         else:
@@ -449,38 +512,57 @@ def _run_qae_sampling(
             if confirm != "y":
                 raise RuntimeError("QAE hardware job cancelled by user.")
 
-    logger.info("QAE[%s]: transpiling %d circuits...", backend_kind, num_circuits)
-    t_tr = time.perf_counter()
-    pm = generate_preset_pass_manager(backend=transpile_backend, optimization_level=1)
-    transpiled = pm.run(circuits)
-    if not isinstance(transpiled, list):
-        transpiled = [transpiled]
-    logger.info("QAE[%s]: transpiled in %.1fs", backend_kind, time.perf_counter() - t_tr)
-
-    logger.info("QAE[%s]: submitting batched job (%d circuits × %d shots)...",
-                backend_kind, num_circuits, shots)
-    t_run = time.perf_counter()
-    if backend_kind == "aer_noisy":
-        job = runtime_target.run(transpiled, shots=shots)
-        result = job.result()
-        good_counts = _extract_good_counts_aer(result, num_circuits)
-    elif backend_kind == "ibm_hw":
+    pm = generate_preset_pass_manager(
+        backend=transpile_backend, optimization_level=int(exec_opts["optimization_level"])
+    )
+    sampler = None
+    if backend_kind == "ibm_hw":
         from qiskit_ibm_runtime import SamplerV2
         try:
             from qiskit_ibm_runtime.options import SamplerOptions
             opts = SamplerOptions()
-            opts.dynamical_decoupling.enable = True
-            opts.twirling.enable_gates = True
-            opts.twirling.enable_measure = True
+            opts.dynamical_decoupling.enable = bool(exec_opts["dynamical_decoupling"])
+            opts.twirling.enable_gates = bool(exec_opts["twirling_enable_gates"])
+            opts.twirling.enable_measure = bool(exec_opts["twirling_enable_measure"])
+            # num_randomizations is the main payload/RAM multiplier (error 8055/1336);
+            # leave it at the runtime's "auto" unless the config pins it down.
+            if exec_opts["twirling_num_randomizations"] is not None:
+                opts.twirling.num_randomizations = exec_opts["twirling_num_randomizations"]
+            if exec_opts["twirling_shots_per_randomization"] is not None:
+                opts.twirling.shots_per_randomization = exec_opts["twirling_shots_per_randomization"]
             sampler = SamplerV2(mode=transpile_backend, options=opts)
         except Exception:
             sampler = SamplerV2(mode=transpile_backend)
-        job = sampler.run(transpiled, shots=shots)
-        result = job.result()
-        good_counts = _extract_good_counts_sampler(result)
-    else:
-        raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-    logger.info("QAE[%s]: job completed in %.1fs", backend_kind, time.perf_counter() - t_run)
+
+    # Transpile + submit in chunks so neither the local transpile nor the IBM
+    # Runtime job ever holds all circuits at once: one giant job OOMs the runtime
+    # (error 1336), and transpiling hundreds of deep circuits can OOM locally.
+    good_counts: List[int] = []
+    transpiled: Optional[List[QuantumCircuit]] = None
+    logger.info("QAE[%s]: %d circuits in %d chunk(s) of <=%d × %d shots",
+                backend_kind, num_circuits, n_chunks, chunk_size, shots)
+    t_run = time.perf_counter()
+    for ci in range(n_chunks):
+        chunk = circuits[ci * chunk_size:(ci + 1) * chunk_size]
+        t_tr = time.perf_counter()
+        tchunk = pm.run(chunk)
+        if not isinstance(tchunk, list):
+            tchunk = [tchunk]
+        logger.info("QAE[%s]: chunk %d/%d transpiled %d circuits in %.1fs",
+                    backend_kind, ci + 1, n_chunks, len(tchunk),
+                    time.perf_counter() - t_tr)
+        if transpiled is None:
+            transpiled = tchunk
+        if backend_kind == "aer_noisy":
+            good_counts.extend(
+                _extract_good_counts_aer(runtime_target.run(tchunk, shots=shots).result(), len(tchunk))
+            )
+        elif backend_kind == "ibm_hw":
+            good_counts.extend(_extract_good_counts_sampler(sampler.run(tchunk, shots=shots).result()))
+        else:
+            raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+        logger.info("QAE[%s]: chunk %d/%d job done", backend_kind, ci + 1, n_chunks)
+    logger.info("QAE[%s]: all chunks completed in %.1fs", backend_kind, time.perf_counter() - t_run)
 
     s_len = len(schedule)
     queries_per_amp = sum(shots * (2 * m + 1) for m in schedule)
@@ -553,6 +635,34 @@ def _run_qae_statevector(
     return a_e, a_joint, total_queries, A_e_circ, A_e, Q_e
 
 
+def _failed_hardware_result(
+    backend_label: str,
+    num_qubits: int,
+    schedule: Sequence[int],
+    shots: int,
+    circuit_image: Optional[str],
+    error: BaseException,
+) -> Dict[str, Any]:
+    """Graceful run_result for a failed hardware/noisy job, so run_pipeline still
+    writes circuit.png (pre-saved), metrics.json, result.json and report.md rather
+    than crashing with a half-populated output dir."""
+    return {
+        "counts": {},
+        "probs": None,
+        "raw": None,
+        "backend": backend_label,
+        "circuit_stats": {
+            "num_wires": num_qubits,
+            "status": "job_failed",
+            "error": f"{type(error).__name__}: {error}",
+            "qae_schedule": list(schedule),
+            "qae_shots_per_round": shots,
+        },
+        "transpiled_stats": None,
+        "circuit_image": circuit_image,
+    }
+
+
 def run_qae(
     output_dir: str,
     spec: CircuitSpec,
@@ -611,6 +721,8 @@ def run_qae(
         )
     schedule: List[int] = list(params.get("mlae_schedule", [0, 1, 2, 4]))
     shots: int = int(params.get("shots_per_round", circuit_config.shots))
+    max_circuits_per_job = params.get("max_circuits_per_job")
+    exec_opts = _parse_hw_exec_options(params)
     seed: int = int(circuit_config.seed if circuit_config.seed is not None else 0)
     rng = np.random.default_rng(seed)
 
@@ -630,29 +742,63 @@ def run_qae(
     t_total = time.perf_counter()
     transpiled_circuits: Optional[List[QuantumCircuit]] = None
 
+    # Pre-build and save the A-circuit image BEFORE any submission, so that a
+    # hardware/noisy job failure (which raises inside job.result()) still leaves
+    # circuit.png — and, via the graceful failure result below, a report.md — in
+    # the output dir instead of a half-populated directory.
+    presaved_circuit_image: Optional[str] = None
+    if save_circuit_image:
+        try:
+            _loader = build_loader_gate(network, layout, num_state_qubits)
+            _A_pre = build_A_from_loader(
+                _loader, num_qubits, num_state_qubits, layout, flag_qubit, dict(evidence)
+            )
+            _A_pre_circ = QuantumCircuit(num_qubits)
+            _A_pre_circ.append(_A_pre, range(num_qubits))
+            from src.circuits.visualize import save_qiskit_circuit_image
+            presaved_circuit_image = save_qiskit_circuit_image(output_dir, _A_pre_circ)
+        except Exception as exc:
+            logger.warning("QAE pre-submission circuit image save failed: %s", exc)
+
     if backend_type == "qiskit_ibm":
         if not device:
             raise ValueError("backend.type='qiskit_ibm' requires backend.device (the IBM backend name).")
         service, ibm_backend = _resolve_ibm_backend(device)
         backend_label = f"qiskit_ibm:{device}"
-        a_e, a_joint, total_queries, A_circ, A_e_gate, Q_e_gate, transpiled_circuits = \
-            _run_qae_sampling(
-                network, evidence, query, query_cards, layout, num_state_qubits,
-                flag_qubit, num_qubits, schedule, shots,
-                backend_kind="ibm_hw", runtime_target=None,
-                transpile_backend=ibm_backend, backend_label=backend_label,
-                skip_confirmation=skip_confirmation,
+        try:
+            a_e, a_joint, total_queries, A_circ, A_e_gate, Q_e_gate, transpiled_circuits = \
+                _run_qae_sampling(
+                    network, evidence, query, query_cards, layout, num_state_qubits,
+                    flag_qubit, num_qubits, schedule, shots,
+                    backend_kind="ibm_hw", runtime_target=None,
+                    transpile_backend=ibm_backend, backend_label=backend_label,
+                    skip_confirmation=skip_confirmation,
+                    max_circuits_per_job=max_circuits_per_job,
+                    exec_opts=exec_opts,
+                )
+        except Exception as exc:
+            logger.error("QAE hardware job failed (%s): %s", backend_label, exc)
+            return _failed_hardware_result(
+                backend_label, num_qubits, schedule, shots, presaved_circuit_image, exc
             )
     elif backend_type.startswith("qiskit_aer") and device.startswith("noisy:"):
         sim, fake = _resolve_aer_noisy_backend(device)
         backend_label = f"qiskit_aer:{device}"
-        a_e, a_joint, total_queries, A_circ, A_e_gate, Q_e_gate, transpiled_circuits = \
-            _run_qae_sampling(
-                network, evidence, query, query_cards, layout, num_state_qubits,
-                flag_qubit, num_qubits, schedule, shots,
-                backend_kind="aer_noisy", runtime_target=sim,
-                transpile_backend=fake, backend_label=backend_label,
-                skip_confirmation=skip_confirmation,
+        try:
+            a_e, a_joint, total_queries, A_circ, A_e_gate, Q_e_gate, transpiled_circuits = \
+                _run_qae_sampling(
+                    network, evidence, query, query_cards, layout, num_state_qubits,
+                    flag_qubit, num_qubits, schedule, shots,
+                    backend_kind="aer_noisy", runtime_target=sim,
+                    transpile_backend=fake, backend_label=backend_label,
+                    skip_confirmation=skip_confirmation,
+                    max_circuits_per_job=max_circuits_per_job,
+                    exec_opts=exec_opts,
+                )
+        except Exception as exc:
+            logger.error("QAE noisy-sim job failed (%s): %s", backend_label, exc)
+            return _failed_hardware_result(
+                backend_label, num_qubits, schedule, shots, presaved_circuit_image, exc
             )
     elif backend_type.startswith("qiskit_aer"):
         backend_label = "qiskit_aer (statevector)"

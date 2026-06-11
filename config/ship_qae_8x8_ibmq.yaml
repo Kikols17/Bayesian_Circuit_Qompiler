@@ -1,3 +1,4 @@
+# pos = 4, 6
 experiment:
   name: "ship_localization_qae_8x8_ibmq"
   output_dir: "outputs/ship_localization_qae_8x8_ibmq"
@@ -12,12 +13,12 @@ network:
   params:
     grid_size: 8
     lighthouses:
-      - [0, 0]
-      - [7, 7]
-    num_dist_bins: 2
-    num_bear_bins: 2
-    dist_noise: [0.85, 0.15, 0.0, 0.0]
-    bear_noise: [0.85, 0.15, 0.0, 0.0]
+      - [1, 3]
+      - [6, 7]
+    num_dist_bins: 8
+    num_bear_bins: 8
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
 
 inference:
   compiler: "QAE"
@@ -34,16 +35,18 @@ inference:
     type: "qiskit_ibm"
     device: "ibm_fez"
     params:
-      mlae_schedule: [0, 1, 2]
+      mlae_schedule: [0]
       driver: "mlae"
-  # 10 state + 1 flag = 11 qubits. 64 cells × |schedule|=3 + 3 (P(e)) = 195
-  # circuits in one batched SamplerV2 job. Past the fez coherence wall at
-  # A·Q^2, so this is a plumbing test, not a fidelity benchmark.
+  # 10 state + 1 flag = 11 qubits. schedule=[0] => 64 cells + 1 P(e) = 65 shallow
+  # A circuits in one SamplerV2 job. NOTE: one transpiled A is already ~14k CX at
+  # 8x8, so 65 of them (~930k CX) is expected to OOM the IBM Runtime (error 1336);
+  # the hardened pipeline still saves circuit.png + a report documenting the wall.
+  # Local transpile of 65 circuits is safe (~200 MB).
   evidence:
-    Dist1: 0
-    Bear1: 0
+    Dist1: 4
+    Bear1: 5
     Dist2: 1
-    Bear2: 1
+    Bear2: 0
   query:
     - "X"
     - "Y"

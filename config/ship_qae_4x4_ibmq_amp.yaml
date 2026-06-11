@@ -1,0 +1,78 @@
+#pos = 2, 3
+# Advantage-first counterpart of ship_qae_4x4_ibmq.yaml. Identical problem, but
+# mlae_schedule = [0, 1]: it adds one Grover power (A·Q^1), so the run carries the
+# formal amplitude-estimation advantage (amplification is structurally present)
+# rather than reading the amplitude directly. The price is depth: A·Q^1 is ~9k CX
+# on this 9-qubit toy, well past ibm_fez's ~1-6k-CX T2 budget, so the heatmap is
+# expected to be MORE noise-dominated than the [0] run — this file exists to
+# measure that empirical gap on real hardware, not to win on accuracy.
+# Full knob documentation lives in ship_qae_4x4_ibmq.yaml; only the knobs that
+# DIFFER for the deeper schedule are explained below.
+experiment:
+  name: "ship_localization_qae_4x4_ibmq_amp"
+  output_dir: "outputs/ship_localization_qae_4x4_ibmq_amp"
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+
+network:
+  builder: "generator"
+  save_image: true
+  type: "ship_localization"
+  params:
+    grid_size: 4
+    lighthouses:
+      - [1, 1]
+      - [3, 2]
+    num_dist_bins: 2
+    num_bear_bins: 2
+    dist_noise: [0.95, 0.03, 0.01, 0.01]
+    bear_noise: [0.95, 0.03, 0.01, 0.01]
+
+inference:
+  compiler: "QAE"
+  encoding: "binary"
+  encoding_params: {}
+  baseline:
+    enabled: true
+    method: "variable_elimination"
+    params: {}
+  circuit:
+    shots: 1024
+    seed: 123
+  backend:
+    type: "qiskit_ibm"
+    device: "ibm_fez"
+    params:
+      driver: "mlae"
+
+      # [0,1] => each of the 17 amplitudes gets an A (m=0) AND an A·Q^1 (m=1)
+      # circuit => 34 circuits. The m=1 half is the deep/advantage-bearing part.
+      mlae_schedule: [0, 1]
+
+      # Deep A·Q^1 circuits are the error-1336 (runtime RAM) risk, so chunk hard:
+      # one circuit per SamplerV2 job keeps both payload (8055) and container RAM
+      # (1336) at their minimum. Slow (34 separate jobs) but the safest submission.
+      max_circuits_per_job: 1
+
+      # Highest transpiler effort to claw back as much CX/depth as possible from
+      # the deep circuits — matters most precisely when the schedule is deep.
+      optimization_level: 3
+
+      dynamical_decoupling: true
+
+      # Cap the twirl multiplier: with deep circuits, leaving num_randomizations
+      # on "auto" inflates per-job RAM/payload and reinvites 1336/8055. 2 keeps
+      # some mitigation while bounding the multiplier.
+      twirling:
+        enable_gates: true
+        enable_measure: true
+        num_randomizations: 2
+  evidence:
+    Dist1: 1
+    Bear1: 1
+    Dist2: 0
+    Bear2: 1
+  query:
+    - "X"
+    - "Y"
