@@ -122,6 +122,69 @@ def _binary_index_to_padded_index(
     return padded
 
 
+def _snake_permutation(padded_bits_per_var: List[int]):
+    """Row-major padded index -> boustrophedon (snake) position, for a 2D query.
+
+    Returns None for non-2D queries so the caller keeps the row-major layout.
+    Snake ordering keeps spatially adjacent grid cells adjacent along the chain,
+    which changes where the MPS truncation has to spend bond dimension.
+    """
+    if len(padded_bits_per_var) != 2:
+        return None
+    bx, by = padded_bits_per_var
+    gx, gy = 2 ** bx, 2 ** by
+    perm = np.empty(gx * gy, dtype=int)
+    for xp in range(gx):
+        for yp in range(gy):
+            padded_idx = (xp << by) | yp
+            s = yp if xp % 2 == 0 else (gy - 1 - yp)
+            perm[padded_idx] = xp * gy + s
+    return perm
+
+
+def _mps_compress(
+    amp: np.ndarray, chi: int
+) -> Tuple[np.ndarray, float, List[int], List[np.ndarray]]:
+    """Best bond-dimension-chi MPS approximation of a real amplitude vector.
+
+    Returns (unit_reconstructed_vector, state_fidelity, bond_dims, tensors) from a
+    single left-to-right SVD sweep truncating every bond to chi. Sites 0..n-2 are
+    left-canonical isometries; the last tensor is rescaled so the MPS contracts to
+    a unit-norm state (needed for the exact sequential circuit preparation).
+    """
+    norm = float(np.linalg.norm(amp))
+    if norm == 0.0:
+        return amp.copy(), 1.0, [], []
+    a_unit = amp / norm
+    n = int(round(math.log2(a_unit.size)))
+    bond_left = 1
+    tensors: List[np.ndarray] = []
+    bond_dims: List[int] = []
+    matrix = a_unit.reshape(bond_left * 2, a_unit.size // 2)
+    for _ in range(n - 1):
+        u, s, vh = np.linalg.svd(matrix, full_matrices=False)
+        r = min(chi, s.size)
+        u, s, vh = u[:, :r], s[:r], vh[:r, :]
+        tensors.append(u.reshape(bond_left, 2, r))
+        bond_left = r
+        bond_dims.append(r)
+        matrix = (s[:, None] * vh).reshape(bond_left * 2, -1)
+    tensors.append(matrix.reshape(bond_left, 2, 1))
+
+    psi = tensors[0].reshape(2, tensors[0].shape[2])
+    for site in range(1, n):
+        t = tensors[site]
+        rl, _, rr = t.shape
+        psi = (psi.reshape(-1, rl) @ t.reshape(rl, 2 * rr)).reshape(-1, rr)
+    recon = psi.reshape(-1)
+    recon_norm = float(np.linalg.norm(recon))
+    fidelity = float(abs(recon @ a_unit) ** 2 / recon_norm ** 2) if recon_norm > 0 else 0.0
+    if recon_norm > 0:
+        tensors[-1] = tensors[-1] / recon_norm
+        recon = recon / recon_norm
+    return recon, fidelity, bond_dims, tensors
+
+
 class QAAQompiler(QompilerBase):
     name = "QAA"
 
@@ -149,6 +212,9 @@ class QAAQompiler(QompilerBase):
                 k = int(encoding_params["k"]) if encoding_params else None
                 marginalize = list(encoding_params.get("marginalize", [])) if encoding_params else []
             elif encoding == "binary":
+                k = None
+                marginalize = []
+            elif encoding == "mps":
                 k = None
                 marginalize = []
             else:
@@ -300,6 +366,45 @@ class QAAQompiler(QompilerBase):
                 truncated_padded = [0.0] * padded_size
                 for idx, p in top:
                     truncated_padded[idx] = p / total
+
+                def circuit_fn(
+                    wires: Dict[str, List[int]],
+                    evidence_map: Dict[str, int],
+                    query_nodes: List[str],
+                ):
+                    amps_pl = [math.sqrt(p) for p in truncated_padded]
+                    qml.AmplitudeEmbedding(amps_pl, wires=query_wire_list, normalize=True)
+                    return qml.probs(wires=query_wire_list)
+
+            elif encoding == "mps":
+                chi = int(encoding_params["chi"])
+                order = encoding_params.get("order", "row_major")
+                amp = np.sqrt(np.asarray(padded_probs, dtype=float))
+                perm = _snake_permutation(padded_bits_per_var) if order == "snake" else None
+                if perm is not None:
+                    ordered = np.empty_like(amp)
+                    ordered[perm] = amp
+                    recon_ordered, fidelity, bond_dims, tensors = _mps_compress(ordered, chi)
+                    recon = recon_ordered[perm]
+                else:
+                    recon, fidelity, bond_dims, tensors = _mps_compress(amp, chi)
+
+                probs_trunc = recon ** 2
+                total = float(probs_trunc.sum())
+                truncated_padded = (
+                    (probs_trunc / total).tolist() if total > 0 else probs_trunc.tolist()
+                )
+
+                metadata["mps_state"] = {
+                    "chi": chi,
+                    "order": order if perm is not None else "row_major",
+                    "num_qubits": num_wires,
+                    "fidelity": fidelity,
+                    "bond_dims": bond_dims,
+                    "max_bond": max(bond_dims) if bond_dims else 1,
+                    "tensors": [t.tolist() for t in tensors],
+                    "snake_perm": perm.tolist() if perm is not None else None,
+                }
 
                 def circuit_fn(
                     wires: Dict[str, List[int]],

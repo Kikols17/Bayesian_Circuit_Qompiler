@@ -14,8 +14,10 @@ from .types import (
     OutputConfig,
 )
 
-_SUPPORTED_ENCODINGS = ("binary", "one_hot", "sparse_topk")
+_SUPPORTED_ENCODINGS = ("binary", "one_hot", "sparse_topk", "mps")
 _TOPK_REQUIRED_KEYS = ("k", "marginalize")
+_MPS_ALLOWED_KEYS = ("chi", "order")
+_MPS_ALLOWED_ORDERS = ("row_major", "snake")
 
 
 def _get_required(data: Dict[str, Any], key: str) -> Any:
@@ -42,6 +44,26 @@ def _validate_encoding_params(
         return
 
     if encoding == "one_hot" and not params:
+        return
+
+    if encoding == "mps":
+        extra = [k for k in params if k not in _MPS_ALLOWED_KEYS]
+        if extra:
+            raise ValueError(
+                f"inference.encoding={encoding!r} got unknown encoding_params keys: {extra}. "
+                f"Allowed keys: {list(_MPS_ALLOWED_KEYS)}."
+            )
+        chi = params.get("chi")
+        if not isinstance(chi, int) or isinstance(chi, bool) or chi <= 0:
+            raise ValueError(
+                f"inference.encoding_params.chi must be a positive integer, got {chi!r}"
+            )
+        order = params.get("order", "row_major")
+        if order not in _MPS_ALLOWED_ORDERS:
+            raise ValueError(
+                f"inference.encoding_params.order must be one of {list(_MPS_ALLOWED_ORDERS)}, "
+                f"got {order!r}"
+            )
         return
 
     missing = [k for k in _TOPK_REQUIRED_KEYS if k not in params]
@@ -131,13 +153,14 @@ def load_config(path: str) -> ExperimentConfig:
     if not isinstance(encoding, str) or not encoding:
         raise ValueError(
             "inference.encoding must be a non-empty string "
-            "(one of: 'binary', 'one_hot', 'sparse_topk')"
+            "(one of: 'binary', 'one_hot', 'sparse_topk', 'mps')"
         )
 
     if "encoding_params" not in inference_raw:
         raise ValueError(
             "inference.encoding_params is required (use '{}' if the chosen "
-            "encoding takes no parameters; sparse_topk requires k and marginalize)"
+            "encoding takes no parameters; sparse_topk requires k and marginalize; "
+            "mps requires chi and optionally order)"
         )
     encoding_params = inference_raw["encoding_params"]
     if encoding_params is None:

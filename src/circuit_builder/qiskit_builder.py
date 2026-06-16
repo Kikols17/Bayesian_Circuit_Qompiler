@@ -3,9 +3,10 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Sequence, Tuple
 
+import numpy as np
 import pennylane as qml
 from qiskit import QuantumCircuit
-from qiskit.circuit.library import StatePreparation
+from qiskit.circuit.library import StatePreparation, UnitaryGate
 
 from src.config.types import BackendConfig, CircuitConfig
 from src.qompiler.base import CircuitSpec
@@ -217,6 +218,76 @@ def _apply_sparse_state_prep(
             qc.cx(target_wire, ow)
 
 
+def _site_unitary(tensor: np.ndarray, b: int) -> np.ndarray:
+    """Unitary on (1 physical + b ancilla) qubits implementing one MPS site.
+
+    Sequential preparation (Schon 2005): the ancilla register carries the right
+    bond. Acting on input basis (physical=|0>, ancilla=|beta>, beta<R) the gate
+    outputs sum_{s,alpha<L} A[alpha,s,beta] |s>|alpha>. Columns are the
+    left-canonical isometry (orthonormal); remaining columns are an arbitrary
+    orthonormal completion (those inputs never occur during the run). Basis index
+    is big-endian (physical = top bit, ancilla = low b bits).
+    """
+    L, _, R = tensor.shape
+    dim = 2 * (2 ** b)
+    filled = np.zeros((dim, R))
+    used_cols = []
+    for beta in range(R):
+        col = beta  # input: physical=0, ancilla=beta
+        used_cols.append(col)
+        for s in range(2):
+            for alpha in range(L):
+                filled[(s << b) | alpha, beta] = tensor[alpha, s, beta]
+
+    u_full, _, _ = np.linalg.svd(filled, full_matrices=True)
+    completion = u_full[:, R:]
+
+    unitary = np.zeros((dim, dim))
+    for i, col in enumerate(used_cols):
+        unitary[:, col] = filled[:, i]
+    rem = [c for c in range(dim) if c not in used_cols]
+    for j, col in enumerate(rem):
+        unitary[:, col] = completion[:, j]
+    return unitary
+
+
+def _apply_mps_state_prep(
+    qc: QuantumCircuit,
+    tensors: List[np.ndarray],
+    phys_wires: Sequence[int],
+    anc_wires: Sequence[int],
+) -> None:
+    """Prepare a row-major MPS on phys_wires using anc_wires as the bond register.
+
+    Sites are applied right-to-left so the ancilla, initialised |0>, threads the
+    bond and returns to |0> after site 0 (left boundary dim 1). phys_wires[k] is
+    site k, the k-th most significant index bit.
+    """
+    b = len(anc_wires)
+    n = len(tensors)
+    for k in range(n - 1, -1, -1):
+        unitary = _site_unitary(tensors[k], b)
+        big_endian = [phys_wires[k]] + list(anc_wires)
+        qc.append(UnitaryGate(unitary), big_endian[::-1])
+
+
+def _build_mps_circuit(spec: "CircuitSpec", mps_state: dict) -> QuantumCircuit:
+    if mps_state.get("snake_perm") is not None:
+        raise NotImplementedError(
+            "MPS circuit synthesis supports order='row_major' only; 'snake' needs an "
+            "in-circuit index permutation. row_major is also the better order empirically."
+        )
+    n = int(mps_state["num_qubits"])
+    tensors = [np.asarray(t, dtype=float) for t in mps_state["tensors"]]
+    max_bond = max([1] + [t.shape[0] for t in tensors] + [t.shape[2] for t in tensors])
+    b = math.ceil(math.log2(max_bond)) if max_bond > 1 else 0
+    qc = QuantumCircuit(n + b, n)
+    _apply_mps_state_prep(qc, tensors, list(range(n)), list(range(n, n + b)))
+    for i in range(n):
+        qc.measure(i, i)
+    return qc
+
+
 class QiskitCircuitBuilder(CircuitBuilderBase):
     name = "qiskit"
 
@@ -228,6 +299,10 @@ class QiskitCircuitBuilder(CircuitBuilderBase):
         circuit_config: CircuitConfig,
         backend_config: BackendConfig,
     ) -> QuantumCircuit:
+        mps_state = spec.metadata.get("mps_state")
+        if mps_state is not None:
+            return _build_mps_circuit(spec, mps_state)
+
         with qml.tape.QuantumTape() as tape:
             spec.circuit_fn(spec.wires_map, evidence, query)
 

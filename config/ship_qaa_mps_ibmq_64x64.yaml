@@ -1,0 +1,58 @@
+# MPS encoding (chi=2, row_major), preconditioned QAA, real ibm_fez.
+# Derived from the sparse_topk config; same network/evidence so the
+# hardware comparison is apples-to-apples. chi=2 is faithful on the
+# (peaked) ship posterior per the entanglement diagnostic.
+experiment:
+  name: ship_localization_qaa_ibmq_64x64_mps
+  output_dir: outputs/ship_localization_qaa_ibmq_64x64_mps
+  output:
+    save_cpd_md: true
+    save_circuit_image: true
+network:
+  builder: generator
+  save_image: true
+  type: ship_localization
+  params:
+    grid_size: 64
+    lighthouses:
+    - - 40
+      - 39
+    - - 12
+      - 52
+    num_dist_bins: 64
+    num_bear_bins: 64
+    dist_noise:
+    - 0.95
+    - 0.03
+    - 0.01
+    - 0.01
+    bear_noise:
+    - 0.95
+    - 0.03
+    - 0.01
+    - 0.01
+inference:
+  compiler: QAA
+  encoding: mps
+  encoding_params:
+    chi: 2
+    order: row_major
+  baseline:
+    enabled: true
+    method: variable_elimination
+    params: {}
+  circuit:
+    shots: 4096
+    seed: 123
+  backend:
+    type: qiskit_ibm
+    device: ibm_fez
+    wires: 10
+  evidence:
+    Dist1: 16
+    Bear1: 13
+    Dist2: 31
+    Bear2: 23
+  query:
+  - X
+  - Y

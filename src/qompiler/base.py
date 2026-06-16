@@ -35,12 +35,12 @@ class QompilerBase(ABC):
 def qubit_count_per_card(card: int, encoding: str) -> int:
     """Number of qubits needed to encode a discrete variable of given cardinality.
 
-    `sparse_topk` shares the binary wire layout — the encoding only changes how
-    amplitudes are prepared, not how basis states are addressed.
+    `sparse_topk` and `mps` share the binary wire layout — the encoding only
+    changes how amplitudes are prepared, not how basis states are addressed.
     """
     if encoding == "one_hot":
         return card
-    if encoding in ("binary", "sparse_topk"):
+    if encoding in ("binary", "sparse_topk", "mps"):
         return max(1, int(math.ceil(math.log2(card))))
     raise ValueError(f"Unknown encoding: {encoding!r}")
 
@@ -66,7 +66,7 @@ def card_per_node(num_wires: int, encoding: str) -> int:
     `num_wires` qubits can represent under the given encoding."""
     if encoding == "one_hot":
         return num_wires
-    if encoding in ("binary", "sparse_topk"):
+    if encoding in ("binary", "sparse_topk", "mps"):
         return 2 ** num_wires
     raise ValueError(f"Unknown encoding: {encoding!r}")
 
